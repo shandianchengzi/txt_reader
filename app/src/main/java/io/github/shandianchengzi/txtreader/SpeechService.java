@@ -162,6 +162,8 @@ public final class SpeechService extends Service {
         if (intent == null) return START_NOT_STICKY;
         String action = intent.getAction();
         if (STOP.equals(action)) { finish(); return START_NOT_STICKY; }
+        if (PAUSE.equals(action)) { pausePlayback(true); return START_NOT_STICKY; }
+        if (RESUME.equals(action)) { resumePlayback(); return START_NOT_STICKY; }
         if (!PLAY.equals(action)) return START_NOT_STICKY;
         String requestedUri = intent.getStringExtra("uri");
         if (requestedUri == null) { finish(); return START_NOT_STICKY; }
@@ -169,6 +171,9 @@ public final class SpeechService extends Service {
         loadSerial++;
         int currentLoad = loadSerial;
         playing = true;
+        started = true;
+        resumeOnGain = false;
+        engineReady = false;
         uri = requestedUri;
         bookName = intent.getStringExtra("name");
         chapter = Math.max(0, intent.getIntExtra("chapter", 0));
@@ -186,6 +191,13 @@ public final class SpeechService extends Service {
             wake.setReferenceCounted(false);
         }
         if (!wake.isHeld()) wake.acquire();
+        if (!requestFocus()) {
+            playing = false;
+            wake.release();
+            updateNotification();
+            android.widget.Toast.makeText(this, "其他应用正在占用音频，可稍后继续",
+                    android.widget.Toast.LENGTH_LONG).show();
+        }
         if (engine != null) { engine.stop(); engine.shutdown(); engine = null; }
         text = "";
         starts.clear();
@@ -246,7 +258,8 @@ public final class SpeechService extends Service {
                                 });
                             }
                         });
-                        speakNext();
+                        engineReady = true;
+                        if (playing) speakNext();
                     }));
                 });
             } catch (Exception e) {
@@ -274,6 +287,31 @@ public final class SpeechService extends Service {
         } catch (CharacterCodingException e) {
             return new String(bytes, Charset.forName("GB18030"));
         }
+    }
+
+    private void resumePlayback() {
+        if (!started || playing) return;
+        if (!requestFocus()) return;
+        resumeOnGain = false;
+        playing = true;
+        if (wake != null && !wake.isHeld()) wake.acquire();
+        updateNotification();
+        if (engineReady) speakNext();
+        startWatchdog();
+    }
+
+    private void pausePlayback(boolean manual) {
+        if (!started) return;
+        if (manual) resumeOnGain = false;
+        if (playing && utterance != null) position = lastStart;
+        utterance = null;
+        playing = false;
+        if (engine != null) engine.stop();
+        if (wake != null && wake.isHeld()) wake.release();
+        if (manual) releaseFocus();
+        main.removeCallbacks(watchdog);
+        publish(false);
+        updateNotification();
     }
 
     private void speakNext() {
@@ -330,10 +368,7 @@ public final class SpeechService extends Service {
             prefs.edit().putString("books", a.toString()).apply();
         } catch (Exception ignored) {}
     }
-    private void refreshNotification() {
-        ((NotificationManager) getSystemService(NOTIFICATION_SERVICE))
-                .notify(NOTIFICATION_ID, notification());
-    }
+    private void refreshNotification() { updateNotification(); }
     private void notifyFailure() {
         android.widget.Toast.makeText(this, "无法朗读：请检查本地 TXT 和中文离线 TTS 语音",
                 android.widget.Toast.LENGTH_LONG).show();
@@ -343,9 +378,14 @@ public final class SpeechService extends Service {
         loadSerial++;
         serial++;
         playing = false;
+        started = false;
+        resumeOnGain = false;
+        main.removeCallbacks(watchdog);
         publish(false);
         if (engine != null) { engine.stop(); engine.shutdown(); engine = null; }
         if (wake != null && wake.isHeld()) wake.release();
+        releaseFocus();
+        updateMediaState();
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE);
         else stopForeground(true);
         stopSelf();
@@ -353,9 +393,13 @@ public final class SpeechService extends Service {
     @Override public void onDestroy() {
         loadSerial++;
         playing = false;
+        started = false;
+        main.removeCallbacks(watchdog);
         publish(false);
         if (engine != null) { engine.stop(); engine.shutdown(); engine = null; }
         if (wake != null && wake.isHeld()) wake.release();
+        releaseFocus();
+        if (session != null) { session.setActive(false); session.release(); session = null; }
         if (active == this) active = null;
         super.onDestroy();
     }
