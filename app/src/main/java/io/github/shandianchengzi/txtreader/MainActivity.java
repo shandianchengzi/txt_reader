@@ -5,13 +5,18 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Color;
+import android.text.Layout;
+import android.text.Spannable;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.style.BackgroundColorSpan;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.speech.tts.Voice;
-import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.widget.Button;
@@ -59,7 +64,11 @@ public class MainActivity extends Activity {
     private TextView title, page;
     private ScrollView scroller;
     private Button speechButton;
-    private int fontSize = 19, generation, speechOffset, speechChapter = -1;
+    private int fontSize = 19, generation, speechOffset, speechChapter = -1, touchedOffset;
+    private int utteranceStart, utteranceEnd;
+    private String activeUtteranceId;
+    private BackgroundColorSpan speechHighlight;
+    private boolean speechRequested;
     private float speed = 1.0f;
     private boolean speaking, ttsReady, ttsLoading;
     private TextToSpeech tts;
@@ -116,7 +125,15 @@ public class MainActivity extends Activity {
         page.setTextSize(fontSize);
         page.setLineSpacing(dp(5), 1.18f);
         page.setPadding(dp(19), dp(16), dp(19), dp(30));
+        // Let ScrollView handle swipes; TextView's click callback only handles taps.
+        page.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_UP)
+                touchedOffset = page.getOffsetForPosition(event.getX(), event.getY());
+            return false;
+        });
+        page.setOnClickListener(v -> beginSpeechAt(touchedOffset));
         scroller.addView(page);
+        scroller.setOnScrollChangeListener((v, x, y, oldX, oldY) -> updateProgress());
         root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout nav = row();
@@ -192,6 +209,8 @@ public class MainActivity extends Activity {
         speechChapter = -1;
         speechOffset = 0;
         book = b;
+        chapters.clear();
+        fullText = "";
         title.setText("加载中 · " + b.name);
         page.setText("正在读取 TXT…");
         new Thread(() -> {
@@ -259,10 +278,50 @@ public class MainActivity extends Activity {
     private void displayChapter(int scrollY) {
         if (book == null || chapters.isEmpty()) return;
         Chapter c = chapters.get(book.chapter);
-        title.setText(book.name + " · " + (book.chapter + 1) + "/" + chapters.size() + " · " + c.title);
-        page.setText(fullText.substring(c.start, c.end).trim());
-        scroller.post(() -> scroller.scrollTo(0, scrollY));
+        scroller.scrollTo(0, 0);
+        speechHighlight = null;
+        page.setText(new SpannableStringBuilder(fullText.substring(c.start, c.end).trim()),
+                TextView.BufferType.SPANNABLE);
+        Book expectedBook = book;
+        int expectedChapter = book.chapter;
+        scroller.post(() -> {
+            if (book == expectedBook && book.chapter == expectedChapter) {
+                scroller.scrollTo(0, scrollY);
+                updateProgress();
+            }
+        });
+        updateProgress();
         save();
+    }
+
+    // Position is derived from the actual first visible text line, not the chapter start.
+    private int topVisibleOffset() {
+        Layout layout = page.getLayout();
+        if (layout == null) return 0;
+        int y = Math.max(0, scroller.getScrollY() - page.getTotalPaddingTop());
+        return layout.getLineStart(layout.getLineForVertical(y));
+    }
+
+    private int visibleParagraphStart() {
+        String text = page.getText().toString();
+        int offset = Math.min(topVisibleOffset(), text.length());
+        int start = text.lastIndexOf('\n', Math.max(0, offset - 1)) + 1;
+        while (start < text.length() && Character.isWhitespace(text.charAt(start))) start++;
+        return start;
+    }
+
+    private void updateProgress() {
+        if (book == null || chapters.isEmpty() || fullText.isEmpty()) return;
+        Chapter c = chapters.get(book.chapter);
+        int offset = Math.min(topVisibleOffset(), page.length());
+        int pos = c.start + offset;
+        if (book.chapter == chapters.size() - 1
+                && scroller.getHeight() > 0
+                && scroller.getScrollY() >= page.getHeight() - scroller.getHeight() - dp(2))
+            pos = fullText.length();
+        int percent = (int) (100L * Math.min(pos, fullText.length()) / fullText.length());
+        title.setText(c.title + " · " + percent + "% · " + (book.chapter + 1) + "/" + chapters.size());
+        book.scroll = scroller.getScrollY();
     }
 
     private void savePosition() {
@@ -346,16 +405,34 @@ public class MainActivity extends Activity {
 
     private void toggleSpeech() {
         if (book == null || chapters.isEmpty()) { message("请先导入小说"); return; }
-        if (speaking) { stopSpeech(); return; }
+        if (speaking || (ttsLoading && speechRequested)) { stopSpeech(); return; }
+        beginSpeechAt(visibleParagraphStart());
+    }
+
+    // Tapping starts at the exact touched character; the button starts at the
+    // beginning of the first paragraph visible at the top of the screen.
+    private void beginSpeechAt(int offset) {
+        if (book == null || chapters.isEmpty()) return;
+        stopSpeech();
+        speechChapter = book.chapter;
+        speechOffset = Math.max(0, Math.min(offset, page.length()));
+        speechRequested = true;
         if (ttsReady) { startSpeech(); return; }
         if (ttsLoading) return;
+        initSpeechEngine();
+    }
+
+    private void initSpeechEngine() {
         ttsLoading = true;
         speechButton.setText("初始化");
-        tts = new TextToSpeech(this, status -> {
+        tts = new TextToSpeech(this, status -> runOnUiThread(() -> {
             ttsLoading = false;
-            speechButton.setText("朗读");
-            if (status != TextToSpeech.SUCCESS || tts == null) {
-                message("系统 TTS 初始化失败，请检查语音引擎设置"); return;
+            if (isDestroyed() || tts == null) return;
+            if (status != TextToSpeech.SUCCESS) {
+                speechRequested = false;
+                speechButton.setText("朗读");
+                message("系统 TTS 初始化失败，请检查语音引擎设置");
+                return;
             }
             Voice chosen = null;
             Set<Voice> voices = tts.getVoices();
@@ -368,20 +445,34 @@ public class MainActivity extends Activity {
                 }
             }
             if (chosen == null || tts.setVoice(chosen) != TextToSpeech.SUCCESS) {
+                speechRequested = false;
+                speechButton.setText("朗读");
                 message("没有可用的中文离线语音。请在系统 TTS 设置中安装中文离线语音包。");
                 return;
             }
             tts.setSpeechRate(speed);
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String id) {}
+                @Override public void onStart(String id) {
+                    runOnUiThread(() -> {
+                        if (speaking && id.equals(activeUtteranceId))
+                            highlight(utteranceStart, utteranceEnd);
+                    });
+                }
+                @Override public void onRangeStart(String id, int start, int end, int frame) {
+                    // Android 8+ engines may report exactly which character range is audible.
+                    runOnUiThread(() -> {
+                        if (speaking && id.equals(activeUtteranceId))
+                            highlight(utteranceStart + start, utteranceStart + end);
+                    });
+                }
                 @Override public void onDone(String id) {
                     runOnUiThread(() -> {
-                        if (speaking && id.startsWith(generation + ":")) speakNext();
+                        if (speaking && id.equals(activeUtteranceId)) speakNext();
                     });
                 }
                 @Override public void onError(String id) {
                     runOnUiThread(() -> {
-                        if (id.startsWith(generation + ":")) {
+                        if (id.equals(activeUtteranceId)) {
                             stopSpeech();
                             message("朗读失败，请检查离线语音数据");
                         }
@@ -389,53 +480,100 @@ public class MainActivity extends Activity {
                 }
             });
             ttsReady = true;
-            if (book != null && !chapters.isEmpty()) startSpeech();
-        });
+            speechButton.setText("朗读");
+            if (speechRequested && book != null && !chapters.isEmpty()) startSpeech();
+        }));
     }
+
     private void startSpeech() {
-        if (speechChapter != book.chapter) { speechOffset = 0; speechChapter = book.chapter; }
+        if (book == null || chapters.isEmpty() || !speechRequested) return;
         speaking = true;
         speechButton.setText("暂停");
         speakNext();
     }
+
+    private void clearHighlight() {
+        if (speechHighlight != null && page.getText() instanceof Spannable) {
+            ((Spannable) page.getText()).removeSpan(speechHighlight);
+            speechHighlight = null;
+            page.invalidate();
+        }
+    }
+
+    private void highlight(int start, int end) {
+        if (!(page.getText() instanceof Spannable)) return;
+        Spannable span = (Spannable) page.getText();
+        clearHighlight();
+        int from = Math.max(0, Math.min(start, span.length()));
+        int to = Math.max(from, Math.min(end, span.length()));
+        if (from == to) return;
+        speechHighlight = new BackgroundColorSpan(Color.rgb(241, 236, 222));
+        span.setSpan(speechHighlight, from, to, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        page.invalidate();
+
+        // Scroll only when the audible text leaves the visible viewport.
+        Layout layout = page.getLayout();
+        if (layout == null) return;
+        int line = layout.getLineForOffset(from);
+        int top = page.getTotalPaddingTop() + layout.getLineTop(line);
+        int bottom = page.getTotalPaddingTop() + layout.getLineBottom(line);
+        int viewTop = scroller.getScrollY();
+        if (top < viewTop || bottom > viewTop + scroller.getHeight() - dp(18))
+            scroller.smoothScrollTo(0, Math.max(0, top - dp(26)));
+    }
+
     private void stopSpeech() {
         generation++;
         speaking = false;
+        speechRequested = false;
+        activeUtteranceId = null;
+        clearHighlight();
         if (speechButton != null) speechButton.setText("朗读");
         if (tts != null) tts.stop();
     }
+
     private void speakNext() {
         if (!speaking || !ttsReady || book == null || chapters.isEmpty()) return;
-        Chapter c = chapters.get(book.chapter);
-        String str = fullText.substring(c.start, c.end);
-        while (speechOffset < str.length() && Character.isWhitespace(str.charAt(speechOffset))) speechOffset++;
+        String str = page.getText().toString();  // Exactly the same offsets as displayed text.
+        while (speechOffset < str.length() && Character.isWhitespace(str.charAt(speechOffset)))
+            speechOffset++;
+
         if (speechOffset >= str.length()) {
             if (book.chapter + 1 < chapters.size()) {
-                changeChapter(book.chapter + 1);
+                savePosition();
+                book.chapter++;
+                book.scroll = 0;
                 speechChapter = book.chapter;
                 speechOffset = 0;
-                speaking = true;
-                speechButton.setText("暂停");
+                displayChapter(0);
                 speakNext();
             } else {
                 stopSpeech();
-                speechOffset = 0;
                 message("已朗读到小说末尾");
             }
             return;
         }
-        int end = Math.min(speechOffset + 550, str.length());
+
+        // Short segments make highlighting responsive even if the TTS engine does
+        // not implement onRangeStart(). Prefer natural sentence boundaries.
+        int start = speechOffset;
+        int end = Math.min(start + 220, str.length());
         if (end < str.length()) {
-            for (int i = end; i > speechOffset + 160; i--) {
-                if ("。！？；：\n.!?;".indexOf(str.charAt(i - 1)) >= 0) { end = i; break; }
+            for (int i = end; i > start + 50; i--) {
+                if ("。！？；：\n.!?;".indexOf(str.charAt(i - 1)) >= 0) {
+                    end = i;
+                    break;
+                }
             }
         }
-        String part = str.substring(speechOffset, end);
         speechOffset = end;
-        String id = generation + ":" + speechOffset;
-        int result = tts.speak(part, TextToSpeech.QUEUE_FLUSH, null, id);
-        if (result != TextToSpeech.SUCCESS) {
-            stopSpeech(); message("离线朗读失败");
+        utteranceStart = start;
+        utteranceEnd = end;
+        activeUtteranceId = generation + ":" + speechChapter + ":" + end;
+        if (tts.speak(str.substring(start, end), TextToSpeech.QUEUE_FLUSH,
+                null, activeUtteranceId) != TextToSpeech.SUCCESS) {
+            stopSpeech();
+            message("离线朗读失败");
         }
     }
 
