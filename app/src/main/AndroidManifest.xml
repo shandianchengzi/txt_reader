@@ -7,7 +7,7 @@
     <application android:label="TXT 阅读器" android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:usesCleartextTraffic="false" android:allowBackup="false">
         <service android:name=".SpeechService" android:exported="false"
-            android:foregroundServiceType="mediaPlayback"/>
+            android:stopWithTask="false" android:foregroundServiceType="mediaPlayback"/>
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

@@ -71,19 +71,19 @@ jobs:
           fi
       - name: Prepare APK
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
-        run: cp app/build/outputs/apk/release/app-release.apk txt-reader-v0.1.2.apk
+        run: cp app/build/outputs/apk/release/app-release.apk txt-reader-v0.1.3.apk
       - uses: actions/upload-artifact@v4
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         with:
-          name: txt-reader-v0.1.2-apk
-          path: txt-reader-v0.1.2.apk
+          name: txt-reader-v0.1.3-apk
+          path: txt-reader-v0.1.3.apk
       - name: Publish permanent-key Release
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != '' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.2 >/dev/null 2>&1; then
-            gh release upload v0.1.2 txt-reader-v0.1.2.apk --clobber
+          if gh release view v0.1.3 >/dev/null 2>&1; then
+            gh release upload v0.1.3 txt-reader-v0.1.3.apk --clobber
           else
-            gh release create v0.1.2 txt-reader-v0.1.2.apk --title "TXT Reader v0.1.2" --notes "永久签名、ZIP 备份恢复书架与进度、后台连续朗读、单句浅色高亮。"
+            gh release create v0.1.3 txt-reader-v0.1.3.apk --title "TXT Reader v0.1.3" --notes "增强后台连续朗读：MediaSession、通知栏暂停/继续/停止、音频焦点管理、TTS 卡住恢复与前后台进度同步；保留本地书架及备份。"
           fi

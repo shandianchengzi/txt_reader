@@ -7,7 +7,9 @@ Lightweight native Android TXT novel reader with offline system TTS. No third-pa
 - Imports local TXT files (UTF-8/UTF-16/GB18030), automatically detects Chinese chapters and restores scroll positions.
 - Tap any word to start speech at that character; tap “朗读” to start from the paragraph at the top of the current screen.
 - Highlights only the current **sentence**, at most 120 characters, using a subtle beige background.
-- A foreground media playback service continues speaking while the screen is locked or another app is foregrounded, and automatically advances chapters. The persistent notification provides a “停止朗读” action.
+- A foreground media playback service continues speaking while the screen is locked or another app is foregrounded, and automatically advances chapters. MediaSession exposes lock-screen/media controls; the persistent notification provides **暂停 / 继续 / 停止**.
+- Android audio focus pauses playback for calls/other sound apps and resumes after transient interruptions. A conservative watchdog retries a sentence if a system TTS engine stops replying (up to twice, without silently skipping content).
+- Phone manufacturers may still aggressively restrict background activity. If speech consistently stops on screen lock, allow unrestricted battery use for TXT Reader in the phone's system settings; force-stop will always stop playback. The app cannot guarantee survival against system force-stop.
 - Tracks book progress locally; a partial wake lock prevents ordinary screen-off CPU sleep during speech.
 - Offline speech requires an installed system Chinese offline voice; the APK contains no model.
 
