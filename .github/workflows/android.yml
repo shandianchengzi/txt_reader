@@ -43,7 +43,17 @@ jobs:
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         run: |
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/txtreader-signing.p12"
+          # Copying password.txt into Actions secrets can include CR/LF at the end.
+          # The provisioned key uses an alphanumeric password without whitespace.
+          NORMALIZED_PASSWORD=$(printf '%s' "$ANDROID_SIGNING_PASSWORD" | tr -d '\r\n')
+          if ! keytool -list -storetype PKCS12 \
+              -keystore "$RUNNER_TEMP/txtreader-signing.p12" \
+              -alias txtreader -storepass "$NORMALIZED_PASSWORD" >/dev/null 2>&1; then
+            echo "::error::Signing key validation failed. Check that both Actions secrets match the supplied signing bundle."
+            exit 1
+          fi
           echo "ANDROID_SIGNING_STORE_FILE=$RUNNER_TEMP/txtreader-signing.p12" >> "$GITHUB_ENV"
+          printf 'ANDROID_SIGNING_PASSWORD=%s\n' "$NORMALIZED_PASSWORD" >> "$GITHUB_ENV"
       - name: Build signed and compressed APK
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         run: gradle --no-daemon :app:assembleRelease
