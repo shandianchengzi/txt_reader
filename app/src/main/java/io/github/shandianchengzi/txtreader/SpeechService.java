@@ -388,6 +388,7 @@ public final class SpeechService extends Service {
         publish(true);
         if (engine.speak(page.substring(begin, end), TextToSpeech.QUEUE_FLUSH,
                 null, utterance) != TextToSpeech.SUCCESS) replaySentence();
+        else startWatchdog();
     }
     private void publish(boolean nowPlaying) {
         Listener l = listener;
