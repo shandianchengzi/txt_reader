@@ -105,7 +105,7 @@ final class BackupStore {
                         if (!entryName.matches("books/[0-9]{1,4}\\.txt"))
                             throw new IOException("备份内包含未知文件");
                         int index = Integer.parseInt(entryName.substring(6, entryName.length() - 4));
-                        if (index >= records.length || found[index]
+                        if (index >= records.length() || found[index]
                                 || !entryName.equals(records.getJSONObject(index).getString("path")))
                             throw new IOException("备份内的书籍路径无效或重复");
                         File file = new File(folder, index + ".txt");
