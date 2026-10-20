@@ -217,6 +217,7 @@ public final class SpeechService extends Service {
             startForeground(NOTIFICATION_ID, notification(),
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
         else startForeground(NOTIFICATION_ID, notification());
+        updateMediaState();
         if (wake == null) {
             PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
             wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TXTReader:Speech");
@@ -249,7 +250,7 @@ public final class SpeechService extends Service {
                 }
                 String decoded = decode(out.toByteArray()).replace("\r\n", "\n").replace('\r', '\n');
                 main.post(() -> {
-                    if (currentLoad != loadSerial || !playing) return;
+                    if (currentLoad != loadSerial || !started) return;
                     text = decoded;
                     starts.clear();
                     Matcher matcher = HEAD.matcher(text);
@@ -260,7 +261,7 @@ public final class SpeechService extends Service {
                     if (starts.isEmpty()) starts.add(0);
                     chapter = Math.min(chapter, starts.size() - 1);
                     engine = new TextToSpeech(this, status -> main.post(() -> {
-                        if (currentLoad != loadSerial || !playing) return;
+                        if (currentLoad != loadSerial || !started) return;
                         if (status != TextToSpeech.SUCCESS || engine == null) {
                             notifyFailure(); return;
                         }
