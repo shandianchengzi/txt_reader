@@ -51,6 +51,14 @@ jobs:
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/release/app-release.apk
+      - name: Check permanent certificate fingerprint
+        if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
+        run: |
+          ACTUAL=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+          if [ "$ACTUAL" != "558a589e18e4c93268232b7df46283085019ec68087b09d1bece5b67f9ca6866" ]; then
+            echo "::error::APK was signed by an unexpected certificate. Refusing to publish a build that cannot upgrade existing installs."
+            exit 1
+          fi
       - name: Prepare APK
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         run: cp app/build/outputs/apk/release/app-release.apk txt-reader-v0.1.2.apk
