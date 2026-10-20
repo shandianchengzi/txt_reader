@@ -1,39 +1,42 @@
-# TXT 阅读器 📖
+# TXT Reader 📖
 
-一个只做 **TXT 小说阅读与中文离线朗读** 的原生 Android 应用。尽量降低 APK 体积与运行时占用。
+Lightweight native Android TXT novel reader with offline system TTS. No third-party runtime, ad SDK or network permission.
 
-## 功能
+## Features
 
-- 从 Android 系统文件选择器导入本地 \`.txt\` 文件，书架保存文件访问授权（不复制小说，不占用额外的小说存储空间）。
-- 自动识别「第一章」「第十二回」「Chapter 3」「序章」「番外」等标题，提供章节目录、前后章切换；无法识别时仍可按「全文」阅读。
-- 支持 UTF-8（含 BOM）、UTF-16 BOM、GBK/GB18030，保存每本书的章节与章节内滚动位置。
-- 轻触正文任意文字即可从该字开始朗读；直接点击「朗读」则从当前屏幕顶部可见段落的开头朗读。
-- 正在朗读的文字以浅米色背景标记；语音前进到屏幕以外时，正文自动滚动，阅读百分比实时更新。
-- 调整正文字号、系统 TTS 的播放速度、连续朗读到下一章；点击「暂停」停止，再次点击朗读从当前屏幕顶部段落重新开始。
-- 不申请网络权限，不集成账号、广告、统计 SDK、外部字体、数据库或语音模型。无需网络即可阅读手机本地 TXT。
+- Imports local TXT files (UTF-8/UTF-16/GB18030), automatically detects Chinese chapters and restores scroll positions.
+- Tap any word to start speech at that character; tap “朗读” to start from the paragraph at the top of the current screen.
+- Highlights only the current **sentence**, at most 120 characters, using a subtle beige background.
+- A foreground media playback service continues speaking while the screen is locked or another app is foregrounded, and automatically advances chapters. The persistent notification provides a “停止朗读” action.
+- Tracks book progress locally; a partial wake lock prevents ordinary screen-off CPU sleep during speech.
+- Offline speech requires an installed system Chinese offline voice; the APK contains no model.
 
-## 离线朗读说明
+## Book library and reading progress: update vs. reinstall
 
-朗读使用 **Android \`TextToSpeech\` 系统服务**，仅选择 \`isNetworkConnectionRequired() == false\` 的中文语音，不会选择需要联网的 TTS 声音。手机需要**事先在系统「文字转语音 / TTS」设置中下载中文离线语音数据**。未安装离线声音时，会提示安装；安装声音属于操作系统的设置，不由应用内下载。
+- **In-place updates:** Android preserves SharedPreferences, library, imported-book file grants, reading chapter/scroll position, voice speed and font size as long as the package ID and signing key stay unchanged.
+- **Uninstall/reinstall, new phone, or incompatible signing key:** Android normally removes app data. BEFORE uninstall, choose **数据 → 导出完整备份（含小说）**, save the ZIP outside the app folder, then select **数据 → 从 ZIP 备份恢复** after reinstalling.
+- Backups include actual TXT files, book list, chapter, scroll location, last speech location, font size and speed. Imported books are only duplicated to app-private storage when restoring a backup. ZIP files are unencrypted and should be stored securely.
+- Limits: 32 MiB per TXT and 512 MiB per backup. Restoring a ZIP replaces the existing shelf.
 
-Android 的系统 TTS 软件是独立安装的，本项目 APK **不包含语音引擎或语音模型**，所以无法在完全没有系统离线中文声音的手机上直接开口朗读。若文件位于云盘服务商提供的文档选择器中，也需该服务商已经将文件缓存在本机；建议从手机本地目录导入。
+**Migration warning:** v0.1.0/v0.1.1 were signed with different ephemeral debug keys and did not include backup export. The first upgrade to a fixed-signature build STILL requires uninstalling the old APK, which erases its metadata. Please record old progress manually before replacing that version. From v0.1.2 onward, the same permanent key should always be used.
 
-## 构建
+## Permanent Android signing and GitHub Actions
 
-GitHub Actions：\`.github/workflows/android.yml\`。每次推送 \`main\` 时构建最小依赖的 APK，并更新 \`v0.1.1\` Release。
+Keep the permanent PKCS12 key offline and configure these GitHub repository **Actions secrets** in Settings → Secrets and variables → Actions:
 
-本地环境：JDK 17、Android SDK Platform 35、Gradle 8.9。
+- `ANDROID_KEYSTORE_BASE64`: single-line base64 representation of the PKCS12 keystore.
+- `ANDROID_SIGNING_PASSWORD`: keystore/key password; the alias is `txtreader`.
 
-\`\`\`bash
-gradle :app:assembleRelease
-\`\`\`
+Workflow: `.github/workflows/android.yml`. GitHub Actions always compiles Debug APK to validate changes, but only publishes the R8-compressed, permanently signed Release APK when both secrets exist. It NEVER publishes unsigned or ephemeral-debug-signed Release builds. Future APKs must retain the same keystore, `applicationId`, and increment `versionCode`.
 
-项目只使用 Android SDK 与 AGP，没有第三方 Java/Android 运行时依赖。CI 发布经 R8 压缩、**使用调试密钥签名**的 Release 构建 APK，方便在手机上直接安装。此签名由 GitHub Runner 生成，可能随构建变化，升级前可能需卸载旧版（会丢失应用内书架进度）。正式长期分发应配置固定签名密钥。
+Back up the key and password yourself. Losing the key makes future seamless upgrades impossible.
 
-## 设计与限制
+## Development
 
-- 只支持 TXT，最大 32 MiB；阅读界面一次渲染一章，避免加载整本小说到巨大的文本控件。
-- 为了低依赖，采用原生 Java Activity 与 Android UI，不引入 Compose、WebView 或额外第三方框架。
-- 避免在内部存储备份原书，仅存轻量的书架元数据。
-- TTS 用系统离线中文发音，音质随手机已安装的声音而异；不支持关闭界面后在后台长期播放的独立音频服务。
-- v0.1.1 为轻量初版，章节识别采用正则表达式，不保证覆盖所有特殊小说标题排版。
+JDK 17, Android Platform 35, Gradle 8.9:
+
+```bash
+gradle :app:assembleDebug
+```
+
+All runtime functionality uses the Android framework; no third-party Android dependencies.
