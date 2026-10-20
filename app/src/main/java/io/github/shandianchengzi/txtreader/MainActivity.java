@@ -414,8 +414,11 @@ public class MainActivity extends Activity implements SpeechService.Listener {
 
     private void toggleSpeech() {
         if (book == null || chapters.isEmpty()) { message("请先导入小说"); return; }
-        if (SpeechService.isPlaying(book.uri)) stopSpeech();
-        else beginSpeechAt(visibleParagraphStart());
+        if (SpeechService.isPlaying(book.uri)) {
+            startService(new Intent(this, SpeechService.class).setAction(SpeechService.PAUSE));
+        } else if (SpeechService.isActiveFor(book.uri)) {
+            startService(new Intent(this, SpeechService.class).setAction(SpeechService.RESUME));
+        } else beginSpeechAt(visibleParagraphStart());
     }
 
     private void beginSpeechAt(int offset) {
@@ -439,7 +442,7 @@ public class MainActivity extends Activity implements SpeechService.Listener {
 
     private void stopSpeech() {
         Intent intent = new Intent(this, SpeechService.class).setAction(SpeechService.STOP);
-        if (SpeechService.isPlaying(book == null ? "" : book.uri)) startService(intent);
+        if (book != null && SpeechService.isActiveFor(book.uri)) startService(intent);
         clearHighlight();
         if (speechButton != null) speechButton.setText("朗读");
     }
@@ -479,10 +482,10 @@ public class MainActivity extends Activity implements SpeechService.Listener {
         }
         book.audioOffset = start;
         if (playing) {
-            speechButton.setText("停止");
+            speechButton.setText("暂停");
             highlight(start, end);
         } else {
-            speechButton.setText("朗读");
+            speechButton.setText(SpeechService.isActiveFor(uri) ? "继续" : "朗读");
             clearHighlight();
         }
         save();
@@ -498,15 +501,15 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                 if (!uri.equals(b.optString("uri"))) continue;
                 int next = b.optInt("chapter", book.chapter);
                 int offset = b.optInt("audioOffset", -1);
-                if (next >= 0 && next < chapters.size() && next != book.chapter) {
+                boolean changed = next >= 0 && next < chapters.size() && next != book.chapter;
+                boolean moved = offset >= 0 && offset != book.audioOffset;
+                if (offset >= 0) book.audioOffset = offset;
+                if (changed) {
                     book.chapter = next;
                     book.scroll = 0;
                     displayChapter(0);
                 }
-                if (offset >= 0 && (next != book.chapter || offset != book.audioOffset)) {
-                    book.audioOffset = offset;
-                    scrollToOffset(offset);
-                }
+                if (offset >= 0 && (changed || moved)) scrollToOffset(offset);
                 break;
             }
         } catch (Exception ignored) {}
@@ -633,12 +636,17 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
-        syncFromBackground();
-        SpeechService.listen(this);
+        if (book != null && SpeechService.isActiveFor(book.uri)) {
+            SpeechService.listen(this);
+        } else {
+            syncFromBackground();
+            SpeechService.listen(this);
+        }
     }
     @Override protected void onPause() {
         resumed = false;
         SpeechService.listen(null);
+        saves.removeCallbacks(saveLater);
         savePosition();
         super.onPause();
     }
