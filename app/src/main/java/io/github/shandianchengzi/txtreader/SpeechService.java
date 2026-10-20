@@ -56,36 +56,53 @@ public final class SpeechService extends Service {
     private int chapter, position, lastStart, lastEnd, serial, loadSerial;
     private float speed;
     private boolean playing, started, focused, resumeOnGain, engineReady;
-    private int stalledChecks, recoveryAttempts;
-    private long utteranceTimestamp;
+    // Android TTS queues multiple utterances internally. Keep three ahead of playback.
+    // All queue fields are exclusively accessed from the main thread.
+    private static final int BUFFER_COUNT = 3;
+    private static final String LOG_TAG = "TXTReaderTTS";
+    private static final class Segment {
+        final int chapter, start, end;
+        final String id, text;
+        Segment(int chapter, int start, int end, String id, String text) {
+            this.chapter = chapter;
+            this.start = start;
+            this.end = end;
+            this.id = id;
+            this.text = text;
+        }
+    }
+    private final ArrayDeque<Segment> pending = new ArrayDeque<>();
+    private int queuedChapter, queuedOffset, queueEpoch, recoveryAttempts;
+    private long lastProgressTime;
     private final Runnable watchdog = new Runnable() {
         @Override public void run() {
-            if (!playing || !engineReady || engine == null) return;
-            if (utterance != null && android.os.SystemClock.elapsedRealtime() -
-                    utteranceTimestamp >= 12000 && !engine.isSpeaking()) {
-                if (++stalledChecks >= 2) {
-                    stalledChecks = 0;
-                    replaySentence();
-                }
-            } else stalledChecks = 0;
-            if (playing) main.postDelayed(this, 4000);
+            if (!started || !playing || !engineReady) return;
+            Segment first = pending.peekFirst();
+            // Only intervene when the TTS engine is idle, not during a long sentence.
+            if (first != null && android.os.SystemClock.elapsedRealtime() - lastProgressTime > 16000
+                    && engine != null && !engine.isSpeaking()) {
+                android.util.Log.w(LOG_TAG, "queue idle; pending=" + pending.size() +
+                        ", chapter=" + first.chapter + ", offset=" + first.start);
+                recoverQueue(first, "idle watchdog");
+                return;
+            }
+            main.postDelayed(this, 4000);
         }
     };
     private void startWatchdog() {
         main.removeCallbacks(watchdog);
-        if (playing) main.postDelayed(watchdog, 4000);
+        if (playing && engineReady) main.postDelayed(watchdog, 4000);
     }
-    private void replaySentence() {
-        if (!playing) return;
+    private void recoverQueue(Segment first, String reason) {
+        if (!playing || !engineReady || first == null) return;
+        android.util.Log.w(LOG_TAG, "recover " + reason + "; retry=" + recoveryAttempts);
         if (++recoveryAttempts > 2) {
-            android.util.Log.e("TXTReader", "System TTS stalled after retries");
             pausePlayback(true);
-            android.widget.Toast.makeText(this, "语音引擎未响应，已暂停，可点击继续重试",
+            android.widget.Toast.makeText(this,
+                    "语音引擎连续未响应，已暂停，可手动继续",
                     android.widget.Toast.LENGTH_LONG).show();
         } else {
-            position = lastStart;
-            utterance = null;
-            speakNext();
+            resetQueue(first.chapter, first.start);
         }
     }
     private AudioManager audio;
