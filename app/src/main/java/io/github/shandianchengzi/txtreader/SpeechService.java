@@ -3,6 +3,10 @@ package io.github.shandianchengzi.txtreader;
 import android.app.*;
 import android.content.*;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
+import android.media.AudioFocusRequest;
+import android.media.session.MediaSession;
+import android.media.session.PlaybackState;
 import android.net.Uri;
 import android.os.*;
 import android.speech.tts.*;
@@ -17,6 +21,8 @@ import java.util.regex.*;
 public final class SpeechService extends Service {
     static final String PLAY = "txtreader.PLAY";
     static final String STOP = "txtreader.STOP";
+    static final String PAUSE = "txtreader.PAUSE";
+    static final String RESUME = "txtreader.RESUME";
     private static final int NOTIFICATION_ID = 7;
     private static final String CHANNEL = "txtreader-reading";
     private static final int MAX_BYTES = 32 * 1024 * 1024;
@@ -32,6 +38,10 @@ public final class SpeechService extends Service {
         SpeechService s = active;
         return s != null && s.playing && uri.equals(s.uri);
     }
+    static boolean isActiveFor(String uri) {
+        SpeechService s = active;
+        return s != null && s.uri != null && s.started && s.uri.equals(uri);
+    }
     static void listen(Listener callback) {
         listener = callback;
         SpeechService s = active;
@@ -45,17 +55,84 @@ public final class SpeechService extends Service {
     private String uri, bookName, text = "", utterance;
     private int chapter, position, lastStart, lastEnd, serial, loadSerial;
     private float speed;
-    private boolean playing;
+    private boolean playing, started, focused, resumeOnGain, engineReady;
+    private AudioManager audio;
+    private AudioFocusRequest focusRequest;
+    private MediaSession session;
+    private final AudioManager.OnAudioFocusChangeListener focusListener = change -> main.post(() -> {
+        if (!started) return;
+        if (change == AudioManager.AUDIOFOCUS_GAIN) {
+            focused = true;
+            if (resumeOnGain && !playing) { resumeOnGain = false; resumePlayback(); }
+        } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT ||
+                change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+            resumeOnGain = playing;
+            pausePlayback(false);
+            focused = false;
+        } else if (change == AudioManager.AUDIOFOCUS_LOSS) {
+            resumeOnGain = false;
+            pausePlayback(true);
+        }
+    });
 
     @Override public void onCreate() {
         super.onCreate();
         active = this;
+        audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+        session = new MediaSession(this, "TXT Reader");
+        session.setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS
+                | MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS);
+        session.setCallback(new MediaSession.Callback() {
+            @Override public void onPlay() { main.post(() -> resumePlayback()); }
+            @Override public void onPause() { main.post(() -> pausePlayback(true)); }
+            @Override public void onStop() { main.post(() -> finish()); }
+        }, main);
+        session.setActive(true);
+        updateMediaState();
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 26)
             nm.createNotificationChannel(new NotificationChannel(CHANNEL, "小说朗读",
                     NotificationManager.IMPORTANCE_LOW));
     }
 
+    private void updateMediaState() {
+        if (session == null) return;
+        session.setPlaybackState(new PlaybackState.Builder()
+                .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE |
+                        PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_STOP)
+                .setState(!started ? PlaybackState.STATE_STOPPED :
+                        playing ? PlaybackState.STATE_PLAYING : PlaybackState.STATE_PAUSED,
+                        PlaybackState.PLAYBACK_POSITION_UNKNOWN, playing ? 1f : 0f).build());
+    }
+    private void updateNotification() {
+        updateMediaState();
+        if (started) ((NotificationManager) getSystemService(NOTIFICATION_SERVICE))
+                .notify(NOTIFICATION_ID, notification());
+    }
+    private boolean requestFocus() {
+        if (focused) return true;
+        if (Build.VERSION.SDK_INT >= 26) {
+            if (focusRequest == null)
+                focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                        .setAudioAttributes(new AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                        .setOnAudioFocusChangeListener(focusListener, main).build();
+            focused = audio.requestAudioFocus(focusRequest) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        } else {
+            focused = audio.requestAudioFocus(focusListener, AudioManager.STREAM_MUSIC,
+                    AudioManager.AUDIOFOCUS_GAIN) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED;
+        }
+        return focused;
+    }
+    private void releaseFocus() {
+        if (audio != null) {
+            if (Build.VERSION.SDK_INT >= 26 && focusRequest != null)
+                audio.abandonAudioFocusRequest(focusRequest);
+            else audio.abandonAudioFocus(focusListener);
+        }
+        focused = false;
+    }
     private PendingIntent pending(String action, int request) {
         Intent i = new Intent(this, SpeechService.class).setAction(action);
         return PendingIntent.getService(this, request, i,
@@ -69,9 +146,15 @@ public final class SpeechService extends Service {
                 ? new Notification.Builder(this, CHANNEL) : new Notification.Builder(this);
         return n.setSmallIcon(android.R.drawable.ic_media_play)
                 .setContentTitle(bookName == null ? "TXT 阅读器" : bookName)
-                .setContentText("离线语音朗读中 · 第 " + (chapter + 1) + " 章")
-                .setOngoing(true).setContentIntent(open)
-                .addAction(android.R.drawable.ic_media_pause, "停止朗读", pending(STOP, 1))
+                .setContentText((playing ? "离线朗读中" : "已暂停") +
+                        " · 第 " + (chapter + 1) + " 章")
+                .setOngoing(playing).setContentIntent(open)
+                .setCategory(Notification.CATEGORY_TRANSPORT)
+                .setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()))
+                .addAction(playing ? android.R.drawable.ic_media_pause :
+                        android.R.drawable.ic_media_play,
+                        playing ? "暂停" : "继续", pending(playing ? PAUSE : RESUME, 1))
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel, "停止", pending(STOP, 3))
                 .build();
     }
 
