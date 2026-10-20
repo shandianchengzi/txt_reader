@@ -4,6 +4,8 @@ Lightweight native Android TXT novel reader with offline system TTS. No third-pa
 
 ## Features
 
+- **v0.1.4 TTS reliability:** rolling 3-sentence Android TTS queue (one QUEUE_FLUSH to begin, QUEUE_ADD for all subsequent sentences), which keeps speaking across paragraph and chapter boundaries without relying on a new single utterance submission per callback. Stale utterance IDs are ignored; queue recovery replays the first unfinished sentence. Android logcat tag: `TXTReaderTTS`.
+
 - Imports local TXT files (UTF-8/UTF-16/GB18030), automatically detects Chinese chapters and restores scroll positions.
 - Tap any word to start speech at that character; tap “朗读” to start from the paragraph at the top of the current screen.
 - Highlights only the current **sentence**, at most 120 characters, using a subtle beige background.
