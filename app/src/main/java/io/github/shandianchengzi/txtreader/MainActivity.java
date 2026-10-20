@@ -189,6 +189,8 @@ public class MainActivity extends Activity {
     private void load(Book b) {
         stopSpeech();
         savePosition();
+        speechChapter = -1;
+        speechOffset = 0;
         book = b;
         title.setText("加载中 · " + b.name);
         page.setText("正在读取 TXT…");
@@ -387,7 +389,7 @@ public class MainActivity extends Activity {
                 }
             });
             ttsReady = true;
-            startSpeech();
+            if (book != null && !chapters.isEmpty()) startSpeech();
         });
     }
     private void startSpeech() {

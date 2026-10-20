@@ -23,10 +23,10 @@ GitHub Actions：\`.github/workflows/android.yml\`。每次推送 \`main\` 时�
 本地环境：JDK 17、Android SDK Platform 35、Gradle 8.9。
 
 \`\`\`bash
-gradle :app:assembleDebug
+gradle :app:assembleRelease
 \`\`\`
 
-项目只使用 Android SDK 与 AGP，没有第三方 Java/Android 运行时依赖。CI 发布 **debug 签名**的 APK，方便在手机上直接安装。此签名由 GitHub Runner 生成，可能随构建变化，升级前可能需卸载旧版（会丢失应用内书架进度）。正式长期分发应配置固定签名密钥。
+项目只使用 Android SDK 与 AGP，没有第三方 Java/Android 运行时依赖。CI 发布经 R8 压缩、**使用调试密钥签名**的 Release 构建 APK，方便在手机上直接安装。此签名由 GitHub Runner 生成，可能随构建变化，升级前可能需卸载旧版（会丢失应用内书架进度）。正式长期分发应配置固定签名密钥。
 
 ## 设计与限制
 
