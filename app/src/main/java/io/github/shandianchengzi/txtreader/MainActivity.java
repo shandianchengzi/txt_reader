@@ -475,6 +475,12 @@ public class MainActivity extends Activity implements SpeechService.Listener {
 
     @Override public void onSpeech(String uri, int chapter, int start, int end, boolean playing) {
         if (book == null || !book.uri.equals(uri) || chapters.isEmpty()) return;
+        // An asynchronous STOP callback must never undo manual chapter navigation.
+        if (!playing && !SpeechService.isActiveFor(uri)) {
+            speechButton.setText("朗读");
+            clearHighlight();
+            return;
+        }
         if (chapter >= 0 && chapter < chapters.size() && book.chapter != chapter) {
             book.chapter = chapter;
             book.scroll = 0;
