@@ -299,23 +299,25 @@ public final class SpeechService extends Service {
                                 .setUsage(AudioAttributes.USAGE_MEDIA)
                                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
                         engine.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                            @Override public void onStart(String id) {}
+                            @Override public void onStart(String id) {
+                                main.post(() -> onSegmentStart(id));
+                            }
                             @Override public void onDone(String id) {
-                                main.post(() -> {
-                                    if (playing && id.equals(utterance)) {
-                                        recoveryAttempts = 0;
-                                        speakNext();
-                                    }
-                                });
+                                main.post(() -> onSegmentDone(id));
                             }
                             @Override public void onError(String id) {
-                                main.post(() -> {
-                                    if (playing && id.equals(utterance)) replaySentence();
-                                });
+                                main.post(() -> onSegmentError(id, -1));
+                            }
+                            @Override public void onError(String id, int errorCode) {
+                                main.post(() -> onSegmentError(id, errorCode));
+                            }
+                            @Override public void onStop(String id, boolean interrupted) {
+                                android.util.Log.d(LOG_TAG, "onStop id=" + id +
+                                        " interrupted=" + interrupted);
                             }
                         });
                         engineReady = true;
-                        if (playing) speakNext();
+                        if (playing) resetQueue(chapter, position);
                     }));
                 });
             } catch (Exception e) {
@@ -371,42 +373,120 @@ public final class SpeechService extends Service {
         updateNotification();
     }
 
-    private void speakNext() {
-        if (!playing || engine == null || starts.isEmpty()) return;
-        int from = starts.get(chapter);
-        int to = chapter + 1 < starts.size() ? starts.get(chapter + 1) : text.length();
-        String page = text.substring(from, to).trim();
-        while (position < page.length() && Character.isWhitespace(page.charAt(position))) position++;
-        if (position >= page.length()) {
-            if (chapter + 1 >= starts.size()) { finish(); return; }
-            chapter++;
-            position = 0;
-            refreshNotification();
-            speakNext();
+    private String chapterText(int index) {
+        int from = starts.get(index);
+        int to = index + 1 < starts.size() ? starts.get(index + 1) : text.length();
+        return text.substring(from, to).trim();
+    }
+
+    // Called only on explicit start/restart, seek, pause/resume or engine recovery.
+    // Do not use QUEUE_FLUSH for normal transitions between sentences.
+    private void resetQueue(int fromChapter, int fromOffset) {
+        ++queueEpoch;
+        pending.clear();
+        queuedChapter = Math.min(Math.max(0, fromChapter), starts.size() - 1);
+        queuedOffset = Math.max(0, fromOffset);
+        chapter = queuedChapter;
+        position = queuedOffset;
+        utterance = null;
+        if (engine != null) engine.stop();
+        lastProgressTime = android.os.SystemClock.elapsedRealtime();
+        refillQueue(true);
+        startWatchdog();
+    }
+
+    private void refillQueue(boolean fresh) {
+        if (!started || !playing || !engineReady || engine == null || starts.isEmpty()) return;
+        while (pending.size() < BUFFER_COUNT) {
+            if (queuedChapter >= starts.size()) break;
+            String current = chapterText(queuedChapter);
+            while (queuedOffset < current.length() &&
+                    Character.isWhitespace(current.charAt(queuedOffset))) queuedOffset++;
+            if (queuedOffset >= current.length()) {
+                queuedChapter++;
+                queuedOffset = 0;
+                continue;
+            }
+
+            int begin = queuedOffset;
+            int end = Math.min(begin + 120, current.length());
+            for (int i = begin; i < end; i++) {
+                if ("。！？!?；;\\n".indexOf(current.charAt(i)) >= 0) {
+                    end = i + 1;
+                    break;
+                }
+            }
+            String id = queueEpoch + ":" + (++serial);
+            Segment part = new Segment(queuedChapter, begin, end,
+                    id, current.substring(begin, end));
+            int mode = fresh && pending.isEmpty()
+                    ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+            int result = engine.speak(part.text, mode, null, part.id);
+            if (result != TextToSpeech.SUCCESS) {
+                android.util.Log.e(LOG_TAG, "tts.speak failed on " + id);
+                if (pending.isEmpty()) recoverQueue(part, "enqueue error");
+                return;
+            }
+            pending.addLast(part);
+            queuedOffset = end;
+        }
+        android.util.Log.d(LOG_TAG, "queue size=" + pending.size() +
+                ", epoch=" + queueEpoch + ", nextChapter=" + queuedChapter);
+        if (pending.isEmpty() && queuedChapter >= starts.size()) finish();
+    }
+
+    private void onSegmentStart(String id) {
+        if (!playing || !engineReady || pending.isEmpty()) return;
+        Segment head = pending.peekFirst();
+        if (!head.id.equals(id)) {
+            android.util.Log.d(LOG_TAG, "ignored stale start " + id);
             return;
         }
-
-        // One sentence (up to 120 characters); never highlight the entire TTS chunk/page.
-        int begin = position;
-        int end = Math.min(begin + 120, page.length());
-        for (int i = begin; i < end; i++) {
-            if ("。！？!?；;\n".indexOf(page.charAt(i)) >= 0) {
-                end = i + 1;
-                break;
-            }
-        }
-        position = end;
-        lastStart = begin;
-        lastEnd = end;
-        utterance = (++serial) + ":" + chapter + ":" + end;
-        utteranceTimestamp = android.os.SystemClock.elapsedRealtime();
-        stalledChecks = 0;
+        utterance = id;
+        chapter = head.chapter;
+        position = head.start;
+        lastStart = head.start;
+        lastEnd = head.end;
+        lastProgressTime = android.os.SystemClock.elapsedRealtime();
         persistPosition();
         publish(true);
-        if (engine.speak(page.substring(begin, end), TextToSpeech.QUEUE_FLUSH,
-                null, utterance) != TextToSpeech.SUCCESS) replaySentence();
-        else startWatchdog();
+        refreshNotification();
     }
+
+    private void onSegmentDone(String id) {
+        if (!playing || pending.isEmpty()) return;
+        Segment head = pending.peekFirst();
+        if (!head.id.equals(id)) {
+            android.util.Log.d(LOG_TAG, "ignored stale completion " + id);
+            return;
+        }
+        pending.removeFirst();
+        recoveryAttempts = 0;
+        lastProgressTime = android.os.SystemClock.elapsedRealtime();
+        if (!pending.isEmpty()) {
+            Segment next = pending.peekFirst();
+            chapter = next.chapter;
+            position = next.start;
+            lastStart = next.start;
+            lastEnd = next.end;
+        }
+        refillQueue(false); // QUEUE_ADD only; keep already synthesized audio.
+    }
+
+    private void onSegmentError(String id, int code) {
+        if (!playing || pending.isEmpty()) return;
+        Segment head = pending.peekFirst();
+        // If any queued item fails, rewind to the earliest unfinished sentence.
+        boolean found = false;
+        for (Segment entry : pending) {
+            if (entry.id.equals(id)) { found = true; break; }
+        }
+        if (found) {
+            android.util.Log.w(LOG_TAG, "utterance error " + id + " code=" + code);
+            recoverQueue(head, "utterance error");
+        }
+    }
+
     private void publish(boolean nowPlaying) {
         Listener l = listener;
         if (l != null && uri != null)
