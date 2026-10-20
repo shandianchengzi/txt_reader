@@ -56,6 +56,38 @@ public final class SpeechService extends Service {
     private int chapter, position, lastStart, lastEnd, serial, loadSerial;
     private float speed;
     private boolean playing, started, focused, resumeOnGain, engineReady;
+    private int stalledChecks, recoveryAttempts;
+    private long utteranceTimestamp;
+    private final Runnable watchdog = new Runnable() {
+        @Override public void run() {
+            if (!playing || !engineReady || engine == null) return;
+            if (utterance != null && android.os.SystemClock.elapsedRealtime() -
+                    utteranceTimestamp >= 12000 && !engine.isSpeaking()) {
+                if (++stalledChecks >= 2) {
+                    stalledChecks = 0;
+                    replaySentence();
+                }
+            } else stalledChecks = 0;
+            if (playing) main.postDelayed(this, 4000);
+        }
+    };
+    private void startWatchdog() {
+        main.removeCallbacks(watchdog);
+        if (playing) main.postDelayed(watchdog, 4000);
+    }
+    private void replaySentence() {
+        if (!playing) return;
+        if (++recoveryAttempts > 2) {
+            android.util.Log.e("TXTReader", "System TTS stalled after retries");
+            pausePlayback(true);
+            android.widget.Toast.makeText(this, "语音引擎未响应，已暂停，可点击继续重试",
+                    android.widget.Toast.LENGTH_LONG).show();
+        } else {
+            position = lastStart;
+            utterance = null;
+            speakNext();
+        }
+    }
     private AudioManager audio;
     private AudioFocusRequest focusRequest;
     private MediaSession session;
@@ -191,6 +223,8 @@ public final class SpeechService extends Service {
             wake.setReferenceCounted(false);
         }
         if (!wake.isHeld()) wake.acquire();
+        stalledChecks = recoveryAttempts = 0;
+        utterance = null;
         if (!requestFocus()) {
             playing = false;
             wake.release();
@@ -199,6 +233,7 @@ public final class SpeechService extends Service {
                     android.widget.Toast.LENGTH_LONG).show();
         }
         if (engine != null) { engine.stop(); engine.shutdown(); engine = null; }
+        startWatchdog();
         text = "";
         starts.clear();
         final String source = requestedUri;
@@ -249,12 +284,15 @@ public final class SpeechService extends Service {
                             @Override public void onStart(String id) {}
                             @Override public void onDone(String id) {
                                 main.post(() -> {
-                                    if (playing && id.equals(utterance)) speakNext();
+                                    if (playing && id.equals(utterance)) {
+                                        recoveryAttempts = 0;
+                                        speakNext();
+                                    }
                                 });
                             }
                             @Override public void onError(String id) {
                                 main.post(() -> {
-                                    if (id.equals(utterance)) notifyFailure();
+                                    if (playing && id.equals(utterance)) replaySentence();
                                 });
                             }
                         });
@@ -296,6 +334,7 @@ public final class SpeechService extends Service {
         playing = true;
         if (wake != null && !wake.isHeld()) wake.acquire();
         updateNotification();
+        stalledChecks = recoveryAttempts = 0;
         if (engineReady) speakNext();
         startWatchdog();
     }
@@ -342,10 +381,12 @@ public final class SpeechService extends Service {
         lastStart = begin;
         lastEnd = end;
         utterance = (++serial) + ":" + chapter + ":" + end;
+        utteranceTimestamp = android.os.SystemClock.elapsedRealtime();
+        stalledChecks = 0;
         persistPosition();
         publish(true);
         if (engine.speak(page.substring(begin, end), TextToSpeech.QUEUE_FLUSH,
-                null, utterance) != TextToSpeech.SUCCESS) notifyFailure();
+                null, utterance) != TextToSpeech.SUCCESS) replaySentence();
     }
     private void publish(boolean nowPlaying) {
         Listener l = listener;
