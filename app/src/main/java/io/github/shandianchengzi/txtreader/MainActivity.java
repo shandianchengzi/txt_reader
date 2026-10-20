@@ -13,9 +13,6 @@ import android.text.style.BackgroundColorSpan;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
-import android.speech.tts.TextToSpeech;
-import android.speech.tts.UtteranceProgressListener;
-import android.speech.tts.Voice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
@@ -35,19 +32,19 @@ import java.nio.charset.StandardCharsets;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Locale;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-public class MainActivity extends Activity {
+public class MainActivity extends Activity implements SpeechService.Listener {
     private static final int PICK_TXT = 10;
+    private static final int BACKUP_EXPORT = 11, BACKUP_IMPORT = 12;
     private static final int MAX_BYTES = 32 * 1024 * 1024;
     private static final Pattern HEAD = Pattern.compile(
         "(?im)^[ \\t\\u3000]*(第[一二三四五六七八九十百千万零〇两0-9]{1,12}[章节回卷部篇集][^\\r\\n]{0,35}|chapter[ \\t]+[0-9ivxlcdm]+[^\\r\\n]{0,45}|序章|楔子|前言|尾声|后记|番外[^\\r\\n]{0,25})[ \\t\\u3000]*$");
 
     private static class Book {
         String uri, name;
-        int chapter, scroll;
+        int chapter, scroll, audioOffset = -1;
         Book(String u, String n) { uri = u; name = n; }
     }
     private static class Chapter {
@@ -64,14 +61,12 @@ public class MainActivity extends Activity {
     private TextView title, page;
     private ScrollView scroller;
     private Button speechButton;
-    private int fontSize = 19, generation, speechOffset, speechChapter = -1, touchedOffset;
-    private int utteranceStart, utteranceEnd;
-    private String activeUtteranceId;
+    private int fontSize = 19, touchedOffset;
     private BackgroundColorSpan speechHighlight;
-    private boolean speechRequested;
     private float speed = 1.0f;
-    private boolean speaking, ttsReady, ttsLoading;
-    private TextToSpeech tts;
+    private boolean resumed;
+    private final android.os.Handler saves = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable saveLater = this::save;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -85,6 +80,7 @@ public class MainActivity extends Activity {
                 Book b = new Book(o.getString("uri"), o.getString("name"));
                 b.chapter = o.optInt("chapter", 0);
                 b.scroll = o.optInt("scroll", 0);
+                b.audioOffset = o.optInt("audioOffset", -1);
                 library.add(b);
             }
         } catch (Exception ignored) {}
@@ -109,6 +105,7 @@ public class MainActivity extends Activity {
         button(tools, "书架", this::showLibrary);
         button(tools, "目录", this::showChapters);
         button(tools, "字号", this::setFontSize);
+        button(tools, "数据", this::showDataMenu);
 
         title = new TextView(this);
         title.setPadding(dp(14), dp(11), dp(14), dp(11));
@@ -133,7 +130,11 @@ public class MainActivity extends Activity {
         });
         page.setOnClickListener(v -> beginSpeechAt(touchedOffset));
         scroller.addView(page);
-        scroller.setOnScrollChangeListener((v, x, y, oldX, oldY) -> updateProgress());
+        scroller.setOnScrollChangeListener((v, x, y, oldX, oldY) -> {
+            updateProgress();
+            saves.removeCallbacks(saveLater);
+            saves.postDelayed(saveLater, 600);
+        });
         root.addView(scroller, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout nav = row();
@@ -178,6 +179,10 @@ public class MainActivity extends Activity {
 
     @Override protected void onActivityResult(int req, int result, Intent data) {
         super.onActivityResult(req, result, data);
+        if (result == RESULT_OK && data != null && data.getData() != null) {
+            if (req == BACKUP_EXPORT) { exportBackup(data.getData()); return; }
+            if (req == BACKUP_IMPORT) { confirmImport(data.getData()); return; }
+        }
         if (req != PICK_TXT || result != RESULT_OK || data == null || data.getData() == null) return;
         Uri uri = data.getData();
         String name = uri.getLastPathSegment();
@@ -204,10 +209,8 @@ public class MainActivity extends Activity {
     }
 
     private void load(Book b) {
-        stopSpeech();
+        if (book != null && !book.uri.equals(b.uri)) stopSpeech();
         savePosition();
-        speechChapter = -1;
-        speechOffset = 0;
         book = b;
         chapters.clear();
         fullText = "";
@@ -230,6 +233,9 @@ public class MainActivity extends Activity {
                     splitChapters();
                     b.chapter = Math.max(0, Math.min(b.chapter, chapters.size() - 1));
                     displayChapter(b.scroll);
+                    // Recover the most recent position if playback continued during load.
+                    syncFromBackground();
+                    if (resumed) SpeechService.listen(this);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -335,6 +341,7 @@ public class MainActivity extends Activity {
                 JSONObject o = new JSONObject();
                 o.put("uri", b.uri); o.put("name", b.name);
                 o.put("chapter", b.chapter); o.put("scroll", b.scroll);
+                o.put("audioOffset", b.audioOffset);
                 a.put(o);
             }
         } catch (Exception ignored) {}
@@ -348,6 +355,7 @@ public class MainActivity extends Activity {
         savePosition();
         book.chapter = index;
         book.scroll = 0;
+        book.audioOffset = -1;
         displayChapter(0);
     }
     private void moveChapter(int direction) {
@@ -398,105 +406,48 @@ public class MainActivity extends Activity {
         new AlertDialog.Builder(this).setTitle("朗读语速")
                 .setItems(labels, (d, i) -> {
                     speed = values[i];
-                    if (tts != null) tts.setSpeechRate(speed);
+                    if (SpeechService.isPlaying(book == null ? "" : book.uri))
+                        message("语速将在下一次开始朗读时生效");
                     save();
                 }).show();
     }
 
     private void toggleSpeech() {
         if (book == null || chapters.isEmpty()) { message("请先导入小说"); return; }
-        if (speaking || (ttsLoading && speechRequested)) { stopSpeech(); return; }
-        beginSpeechAt(visibleParagraphStart());
+        if (SpeechService.isPlaying(book.uri)) stopSpeech();
+        else beginSpeechAt(visibleParagraphStart());
     }
 
-    // Tapping starts at the exact touched character; the button starts at the
-    // beginning of the first paragraph visible at the top of the screen.
     private void beginSpeechAt(int offset) {
         if (book == null || chapters.isEmpty()) return;
-        stopSpeech();
-        speechChapter = book.chapter;
-        speechOffset = Math.max(0, Math.min(offset, page.length()));
-        speechRequested = true;
-        if (ttsReady) { startSpeech(); return; }
-        if (ttsLoading) return;
-        initSpeechEngine();
+        Intent intent = new Intent(this, SpeechService.class);
+        intent.setAction(SpeechService.PLAY);
+        intent.putExtra("uri", book.uri);
+        intent.putExtra("name", book.name);
+        intent.putExtra("chapter", book.chapter);
+        intent.putExtra("offset", Math.max(0, Math.min(offset, page.length())));
+        intent.putExtra("speed", speed);
+        if (android.os.Build.VERSION.SDK_INT >= 26) startForegroundService(intent);
+        else startService(intent);
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 50);
+        }
+        speechButton.setText("停止");
     }
 
-    private void initSpeechEngine() {
-        ttsLoading = true;
-        speechButton.setText("初始化");
-        tts = new TextToSpeech(this, status -> runOnUiThread(() -> {
-            ttsLoading = false;
-            if (isDestroyed() || tts == null) return;
-            if (status != TextToSpeech.SUCCESS) {
-                speechRequested = false;
-                speechButton.setText("朗读");
-                message("系统 TTS 初始化失败，请检查语音引擎设置");
-                return;
-            }
-            Voice chosen = null;
-            Set<Voice> voices = tts.getVoices();
-            if (voices != null) {
-                for (Voice v : voices) {
-                    if (!v.isNetworkConnectionRequired() && "zh".equals(v.getLocale().getLanguage())) {
-                        chosen = v;
-                        if ("CN".equalsIgnoreCase(v.getLocale().getCountry())) break;
-                    }
-                }
-            }
-            if (chosen == null || tts.setVoice(chosen) != TextToSpeech.SUCCESS) {
-                speechRequested = false;
-                speechButton.setText("朗读");
-                message("没有可用的中文离线语音。请在系统 TTS 设置中安装中文离线语音包。");
-                return;
-            }
-            tts.setSpeechRate(speed);
-            tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-                @Override public void onStart(String id) {
-                    runOnUiThread(() -> {
-                        if (speaking && id.equals(activeUtteranceId))
-                            highlight(utteranceStart, utteranceEnd);
-                    });
-                }
-                @Override public void onRangeStart(String id, int start, int end, int frame) {
-                    // Android 8+ engines may report exactly which character range is audible.
-                    runOnUiThread(() -> {
-                        if (speaking && id.equals(activeUtteranceId))
-                            highlight(utteranceStart + start, utteranceStart + end);
-                    });
-                }
-                @Override public void onDone(String id) {
-                    runOnUiThread(() -> {
-                        if (speaking && id.equals(activeUtteranceId)) speakNext();
-                    });
-                }
-                @Override public void onError(String id) {
-                    runOnUiThread(() -> {
-                        if (id.equals(activeUtteranceId)) {
-                            stopSpeech();
-                            message("朗读失败，请检查离线语音数据");
-                        }
-                    });
-                }
-            });
-            ttsReady = true;
-            speechButton.setText("朗读");
-            if (speechRequested && book != null && !chapters.isEmpty()) startSpeech();
-        }));
-    }
-
-    private void startSpeech() {
-        if (book == null || chapters.isEmpty() || !speechRequested) return;
-        speaking = true;
-        speechButton.setText("暂停");
-        speakNext();
+    private void stopSpeech() {
+        Intent intent = new Intent(this, SpeechService.class).setAction(SpeechService.STOP);
+        if (SpeechService.isPlaying(book == null ? "" : book.uri)) startService(intent);
+        clearHighlight();
+        if (speechButton != null) speechButton.setText("朗读");
     }
 
     private void clearHighlight() {
         if (speechHighlight != null && page.getText() instanceof Spannable) {
             ((Spannable) page.getText()).removeSpan(speechHighlight);
             speechHighlight = null;
-            page.invalidate();
         }
     }
 
@@ -509,9 +460,6 @@ public class MainActivity extends Activity {
         if (from == to) return;
         speechHighlight = new BackgroundColorSpan(Color.rgb(241, 236, 222));
         span.setSpan(speechHighlight, from, to, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        page.invalidate();
-
-        // Scroll only when the audible text leaves the visible viewport.
         Layout layout = page.getLayout();
         if (layout == null) return;
         int line = layout.getLineForOffset(from);
@@ -522,65 +470,180 @@ public class MainActivity extends Activity {
             scroller.smoothScrollTo(0, Math.max(0, top - dp(26)));
     }
 
-    private void stopSpeech() {
-        generation++;
-        speaking = false;
-        speechRequested = false;
-        activeUtteranceId = null;
-        clearHighlight();
-        if (speechButton != null) speechButton.setText("朗读");
-        if (tts != null) tts.stop();
+    @Override public void onSpeech(String uri, int chapter, int start, int end, boolean playing) {
+        if (book == null || !book.uri.equals(uri) || chapters.isEmpty()) return;
+        if (chapter >= 0 && chapter < chapters.size() && book.chapter != chapter) {
+            book.chapter = chapter;
+            book.scroll = 0;
+            displayChapter(0);
+        }
+        book.audioOffset = start;
+        if (playing) {
+            speechButton.setText("停止");
+            highlight(start, end);
+        } else {
+            speechButton.setText("朗读");
+            clearHighlight();
+        }
+        save();
     }
 
-    private void speakNext() {
-        if (!speaking || !ttsReady || book == null || chapters.isEmpty()) return;
-        String str = page.getText().toString();  // Exactly the same offsets as displayed text.
-        while (speechOffset < str.length() && Character.isWhitespace(str.charAt(speechOffset)))
-            speechOffset++;
-
-        if (speechOffset >= str.length()) {
-            if (book.chapter + 1 < chapters.size()) {
-                savePosition();
-                book.chapter++;
-                book.scroll = 0;
-                speechChapter = book.chapter;
-                speechOffset = 0;
-                displayChapter(0);
-                speakNext();
-            } else {
-                stopSpeech();
-                message("已朗读到小说末尾");
-            }
-            return;
-        }
-
-        // Short segments make highlighting responsive even if the TTS engine does
-        // not implement onRangeStart(). Prefer natural sentence boundaries.
-        int start = speechOffset;
-        int end = Math.min(start + 220, str.length());
-        if (end < str.length()) {
-            for (int i = end; i > start + 50; i--) {
-                if ("。！？；：\n.!?;".indexOf(str.charAt(i - 1)) >= 0) {
-                    end = i;
-                    break;
+    private void syncFromBackground() {
+        if (book == null || chapters.isEmpty()) return;
+        String uri = book.uri;
+        try {
+            JSONArray a = new JSONArray(getPreferences(MODE_PRIVATE).getString("books", "[]"));
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject b = a.getJSONObject(i);
+                if (!uri.equals(b.optString("uri"))) continue;
+                int next = b.optInt("chapter", book.chapter);
+                int offset = b.optInt("audioOffset", -1);
+                if (next >= 0 && next < chapters.size() && next != book.chapter) {
+                    book.chapter = next;
+                    book.scroll = 0;
+                    displayChapter(0);
                 }
+                if (offset >= 0 && (next != book.chapter || offset != book.audioOffset)) {
+                    book.audioOffset = offset;
+                    scrollToOffset(offset);
+                }
+                break;
             }
-        }
-        speechOffset = end;
-        utteranceStart = start;
-        utteranceEnd = end;
-        activeUtteranceId = generation + ":" + speechChapter + ":" + end;
-        if (tts.speak(str.substring(start, end), TextToSpeech.QUEUE_FLUSH,
-                null, activeUtteranceId) != TextToSpeech.SUCCESS) {
-            stopSpeech();
-            message("离线朗读失败");
-        }
+        } catch (Exception ignored) {}
     }
 
-    @Override protected void onPause() { super.onPause(); savePosition(); }
+    private void scrollToOffset(int offset) {
+        page.post(() -> {
+            Layout layout = page.getLayout();
+            if (layout != null) {
+                int line = layout.getLineForOffset(Math.max(0, Math.min(offset, page.length())));
+                scroller.scrollTo(0, Math.max(0, page.getTotalPaddingTop()
+                        + layout.getLineTop(line) - dp(24)));
+                updateProgress();
+            }
+        });
+    }
+
+    private void showDataMenu() {
+        new AlertDialog.Builder(this).setTitle("本地书架与进度")
+                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复"},
+                    (dialog, choice) -> {
+                        if (choice == 0) {
+                            Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                            i.addCategory(Intent.CATEGORY_OPENABLE);
+                            i.setType("application/zip");
+                            i.putExtra(Intent.EXTRA_TITLE, "txt-reader-backup.zip");
+                            startActivityForResult(i, BACKUP_EXPORT);
+                        } else {
+                            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                            i.addCategory(Intent.CATEGORY_OPENABLE);
+                            i.setType("*/*");
+                            startActivityForResult(i, BACKUP_IMPORT);
+                        }
+                    }).setNegativeButton("取消", null).show();
+    }
+
+    private JSONObject metadata() throws Exception {
+        savePosition();
+        JSONObject m = new JSONObject();
+        JSONArray books = new JSONArray();
+        for (Book b : library) {
+            JSONObject r = new JSONObject();
+            r.put("uri", b.uri);
+            r.put("name", b.name);
+            r.put("chapter", b.chapter);
+            r.put("scroll", b.scroll);
+            r.put("audioOffset", b.audioOffset);
+            books.put(r);
+        }
+        m.put("books", books);
+        m.put("font", fontSize);
+        m.put("speed", speed);
+        return m;
+    }
+
+    private void exportBackup(Uri target) {
+        final JSONObject snapshot;
+        try { snapshot = metadata(); }
+        catch (Exception e) { message("备份失败：" + e.getMessage()); return; }
+        new Thread(() -> {
+            try {
+                BackupStore.exportTo(this, target, snapshot);
+                runOnUiThread(() -> message("书架、进度和小说已保存到 ZIP"));
+            } catch (Exception e) {
+                runOnUiThread(() -> message("备份失败，请勿使用不完整 ZIP：" + e.getMessage()));
+            }
+        }, "Export TXT backup").start();
+    }
+
+    private void confirmImport(Uri source) {
+        new AlertDialog.Builder(this).setTitle("恢复书架")
+                .setMessage("将用备份中的小说、书架、阅读位置和设置替换现有数据。"
+                        + "恢复的小说保存在应用私有空间；卸载应用仍会删除它们，请保管 ZIP 备份。")
+                .setPositiveButton("恢复", (d, w) -> importBackup(source))
+                .setNegativeButton("取消", null).show();
+    }
+
+    private void importBackup(Uri source) {
+        new Thread(() -> {
+            try {
+                JSONObject state = BackupStore.importFrom(this, source);
+                runOnUiThread(() -> {
+                    try {
+                        stopSpeech();
+                        saves.removeCallbacks(saveLater);
+                        book = null;
+                        library.clear();
+                        chapters.clear();
+                        fullText = "";
+                        JSONArray entries = state.getJSONArray("books");
+                        for (int i = 0; i < entries.length(); i++) {
+                            JSONObject item = entries.getJSONObject(i);
+                            Book b = new Book(item.getString("uri"), item.getString("name"));
+                            b.chapter = item.optInt("chapter", 0);
+                            b.scroll = item.optInt("scroll", 0);
+                            b.audioOffset = item.optInt("audioOffset", -1);
+                            library.add(b);
+                        }
+                        fontSize = Math.max(12, Math.min(32, state.optInt("font", 19)));
+                        speed = Math.max(0.5f, Math.min(3f, (float) state.optDouble("speed", 1)));
+                        page.setTextSize(fontSize);
+                        save();
+                        String keep = "";
+                        if (!library.isEmpty()) {
+                            keep = new java.io.File(Uri.parse(library.get(0).uri)
+                                    .getPath()).getParentFile().getName();
+                            load(library.get(0));
+                        } else {
+                            title.setText("TXT 阅读器");
+                            page.setText("书架为空，请导入小说");
+                        }
+                        BackupStore.deleteOldImports(this, keep);
+                        message("已恢复 " + library.size() + " 本小说及阅读进度");
+                    } catch (Exception e) {
+                        message("恢复失败：" + e.getMessage());
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> message("备份读取失败：" + e.getMessage()));
+            }
+        }, "Restore TXT backup").start();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        resumed = true;
+        syncFromBackground();
+        SpeechService.listen(this);
+    }
+    @Override protected void onPause() {
+        resumed = false;
+        SpeechService.listen(null);
+        savePosition();
+        super.onPause();
+    }
     @Override protected void onDestroy() {
-        stopSpeech();
-        if (tts != null) { tts.shutdown(); tts = null; }
+        saves.removeCallbacks(saveLater);
         super.onDestroy();
     }
 }
