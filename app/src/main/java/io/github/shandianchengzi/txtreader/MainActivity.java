@@ -13,9 +13,6 @@ import android.text.style.BackgroundColorSpan;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
-import android.speech.tts.TextToSpeech;
-import android.speech.tts.UtteranceProgressListener;
-import android.speech.tts.Voice;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
@@ -35,7 +32,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Locale;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -65,13 +61,10 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     private TextView title, page;
     private ScrollView scroller;
     private Button speechButton;
-    private int fontSize = 19, generation, speechOffset, speechChapter = -1, touchedOffset;
-    private int utteranceStart, utteranceEnd;
-    private String activeUtteranceId;
+    private int fontSize = 19, touchedOffset;
     private BackgroundColorSpan speechHighlight;
-    private boolean speechRequested;
     private float speed = 1.0f;
-    private boolean speaking, ttsReady, ttsLoading;
+    private boolean resumed;
     private final android.os.Handler saves = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable saveLater = this::save;
 
@@ -218,8 +211,6 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     private void load(Book b) {
         if (book != null && !book.uri.equals(b.uri)) stopSpeech();
         savePosition();
-        speechChapter = -1;
-        speechOffset = 0;
         book = b;
         chapters.clear();
         fullText = "";
@@ -242,8 +233,9 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                     splitChapters();
                     b.chapter = Math.max(0, Math.min(b.chapter, chapters.size() - 1));
                     displayChapter(b.scroll);
-                    // Re-attach the foreground service after async TXT load.
-                    SpeechService.listen(this);
+                    // Recover the most recent position if playback continued during load.
+                    syncFromBackground();
+                    if (resumed) SpeechService.listen(this);
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
@@ -640,10 +632,12 @@ public class MainActivity extends Activity implements SpeechService.Listener {
 
     @Override protected void onResume() {
         super.onResume();
+        resumed = true;
         syncFromBackground();
         SpeechService.listen(this);
     }
     @Override protected void onPause() {
+        resumed = false;
         SpeechService.listen(null);
         savePosition();
         super.onPause();
