@@ -241,7 +241,9 @@ public final class SpeechService extends Service {
             wake.setReferenceCounted(false);
         }
         if (!wake.isHeld()) wake.acquire();
-        stalledChecks = recoveryAttempts = 0;
+        recoveryAttempts = 0;
+        ++queueEpoch;
+        pending.clear();
         utterance = null;
         if (!requestFocus()) {
             playing = false;
@@ -354,15 +356,26 @@ public final class SpeechService extends Service {
         playing = true;
         if (wake != null && !wake.isHeld()) wake.acquire();
         updateNotification();
-        stalledChecks = recoveryAttempts = 0;
-        if (engineReady) speakNext();
-        startWatchdog();
+        recoveryAttempts = 0;
+        if (engineReady) {
+            Segment first = pending.peekFirst();
+            resetQueue(first != null ? first.chapter : chapter,
+                    first != null ? first.start : position);
+        }
     }
 
     private void pausePlayback(boolean manual) {
         if (!started) return;
         if (manual) resumeOnGain = false;
-        if (playing && utterance != null) position = lastStart;
+        Segment first = pending.peekFirst();
+        if (first != null) {
+            chapter = first.chapter;
+            position = first.start;
+            lastStart = first.start;
+            lastEnd = first.end;
+        }
+        ++queueEpoch;
+        pending.clear();
         utterance = null;
         playing = false;
         if (engine != null) engine.stop();
@@ -411,7 +424,8 @@ public final class SpeechService extends Service {
             int begin = queuedOffset;
             int end = Math.min(begin + 120, current.length());
             for (int i = begin; i < end; i++) {
-                if ("。！？!?；;\\n".indexOf(current.charAt(i)) >= 0) {
+                if (current.charAt(i) == '\n' ||
+                        "。！？!?；;".indexOf(current.charAt(i)) >= 0) {
                     end = i + 1;
                     break;
                 }
@@ -520,6 +534,8 @@ public final class SpeechService extends Service {
         playing = false;
         started = false;
         resumeOnGain = false;
+        ++queueEpoch;
+        pending.clear();
         main.removeCallbacks(watchdog);
         publish(false);
         if (engine != null) { engine.stop(); engine.shutdown(); engine = null; }
@@ -534,6 +550,8 @@ public final class SpeechService extends Service {
         loadSerial++;
         playing = false;
         started = false;
+        ++queueEpoch;
+        pending.clear();
         main.removeCallbacks(watchdog);
         publish(false);
         if (engine != null) { engine.stop(); engine.shutdown(); engine = null; }
