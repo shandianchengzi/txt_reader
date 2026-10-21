@@ -72,23 +72,23 @@ jobs:
       - name: Prepare APK
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         run: |
-          cp app/build/outputs/apk/release/app-release.apk txt-reader-v0.1.5.apk
-          sha256sum txt-reader-v0.1.5.apk > SHA256SUMS.txt
+          cp app/build/outputs/apk/release/app-release.apk txt-reader-v0.1.6.apk
+          sha256sum txt-reader-v0.1.6.apk > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         with:
-          name: txt-reader-v0.1.5-release
+          name: txt-reader-v0.1.6-release
           path: |
-            txt-reader-v0.1.5.apk
+            txt-reader-v0.1.6.apk
             SHA256SUMS.txt
       - name: Publish permanent-key Release
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != '' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.5 >/dev/null 2>&1; then
-            gh release upload v0.1.5 txt-reader-v0.1.5.apk SHA256SUMS.txt --clobber
+          if gh release view v0.1.6 >/dev/null 2>&1; then
+            gh release upload v0.1.6 txt-reader-v0.1.6.apk SHA256SUMS.txt --clobber
           else
-            gh release create v0.1.5 txt-reader-v0.1.5.apk SHA256SUMS.txt --title "TXT Reader v0.1.5" --notes "增加后台耗电管理检测与引导、GPL-3.0-only 许可证，并附带 APK 的 SHA256SUMS.txt 校验码。继续使用固定签名证书以保证后续覆盖安装。"
+            gh release create v0.1.6 txt-reader-v0.1.6.apk SHA256SUMS.txt --title "TXT Reader v0.1.6" --notes "新增 数据 → 检查更新：通过 GitHub Releases 查询新版本，验证 SHA-256 与固定签名证书后交由 Android 安装。持续提供 GPL-3.0-only LICENSE 和 SHA256SUMS.txt。"
           fi

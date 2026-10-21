@@ -71,6 +71,7 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     private BackgroundColorSpan speechHighlight;
     private float speed = 1.0f;
     private boolean resumed;
+    private GitHubUpdater updater;
     private boolean shownBatteryTipThisSession;
     private final android.os.Handler saves = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable saveLater = this::save;
@@ -106,6 +107,7 @@ public class MainActivity extends Activity implements SpeechService.Listener {
             return insets;
         });
         setContentView(root);
+        updater = new GitHubUpdater(this);
 
         LinearLayout tools = row();
         button(tools, "导入TXT", this::pickFile);
@@ -623,8 +625,8 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     }
 
     private void showDataMenu() {
-        new AlertDialog.Builder(this).setTitle("本地书架与进度")
-                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复", "后台朗读设置"},
+        new AlertDialog.Builder(this).setTitle("数据与设置")
+                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复", "后台朗读设置", "检查更新"},
                     (dialog, choice) -> {
                         if (choice == 0) {
                             Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -637,8 +639,10 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                             i.addCategory(Intent.CATEGORY_OPENABLE);
                             i.setType("*/*");
                             startActivityForResult(i, BACKUP_IMPORT);
-                        } else {
+                        } else if (choice == 2) {
                             showBatteryGuide(true);
+                        } else {
+                            updater.checkForUpdates();
                         }
                     }).setNegativeButton("取消", null).show();
     }
@@ -733,6 +737,7 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     @Override protected void onResume() {
         super.onResume();
         resumed = true;
+        if (updater != null) updater.onResume();
         if (book != null && SpeechService.isActiveFor(book.uri)) {
             SpeechService.listen(this);
         } else {

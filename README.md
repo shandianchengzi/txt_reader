@@ -1,8 +1,10 @@
 # TXT Reader 📖
 
-Lightweight native Android TXT novel reader with offline system TTS. No third-party runtime, ad SDK or network permission.
+Lightweight native Android TXT novel reader with offline system TTS. No third-party runtime or ad SDK. INTERNET permission is used exclusively for user-initiated update checks and signed APK downloads from GitHub.
 
 ## Features
+
+- **v0.1.6 manual self-update:** 数据 → 检查更新 queries the official GitHub Releases latest stable tag, compares semantic versions and offers an APK download. The updater downloads official SHA256SUMS.txt and checks the APK's SHA-256, Android package ID, version code/name and the permanent signing certificate SHA-256 before opening the Android package installer. It supports Android 8+ "Install unknown apps" permission and is never a silent install. The APK is shared through a narrowly scoped read-only content provider with temporary URI read permission. No external storage access required. If GitHub is blocked, update checking reports a network error without affecting reading.
 
 - **v0.1.5 battery guidance:** Before continuous speech, check the Android standard battery optimization exemption with `PowerManager.isIgnoringBatteryOptimizations()`; if not exempt, offer a non-blocking reminder with a shortcut to per-app Android settings. Some OEM-specific "allow background activity" switches cannot be inspected via public Android APIs. A manual guide is always accessible via 数据 → 后台朗读设置; reminders can be suppressed.
 - **GPL-3.0-only:** see [LICENSE](LICENSE) for the complete GNU General Public License v3.
