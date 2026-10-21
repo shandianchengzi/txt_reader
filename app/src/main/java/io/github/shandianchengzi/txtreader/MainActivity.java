@@ -12,11 +12,14 @@ import android.text.Spanned;
 import android.text.style.BackgroundColorSpan;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.provider.OpenableColumns;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowInsets;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -39,6 +42,9 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     private static final int PICK_TXT = 10;
     private static final int BACKUP_EXPORT = 11, BACKUP_IMPORT = 12;
     private static final int MAX_BYTES = 32 * 1024 * 1024;
+    private static final String BATTERY_REMIND_HIDDEN = "battery_remind_hidden";
+    private static final String BATTERY_REMIND_LAST = "battery_remind_last";
+    private static final long BATTERY_REMIND_INTERVAL_MS = 24L * 60L * 60L * 1000L;
     private static final Pattern HEAD = Pattern.compile(
         "(?im)^[ \\t\\u3000]*(第[一二三四五六七八九十百千万零〇两0-9]{1,12}[章节回卷部篇集][^\\r\\n]{0,35}|chapter[ \\t]+[0-9ivxlcdm]+[^\\r\\n]{0,45}|序章|楔子|前言|尾声|后记|番外[^\\r\\n]{0,25})[ \\t\\u3000]*$");
 
@@ -65,6 +71,7 @@ public class MainActivity extends Activity implements SpeechService.Listener {
     private BackgroundColorSpan speechHighlight;
     private float speed = 1.0f;
     private boolean resumed;
+    private boolean shownBatteryTipThisSession;
     private final android.os.Handler saves = new android.os.Handler(android.os.Looper.getMainLooper());
     private final Runnable saveLater = this::save;
 
@@ -418,6 +425,7 @@ public class MainActivity extends Activity implements SpeechService.Listener {
             startService(new Intent(this, SpeechService.class).setAction(SpeechService.PAUSE));
         } else if (SpeechService.isActiveFor(book.uri)) {
             startService(new Intent(this, SpeechService.class).setAction(SpeechService.RESUME));
+            maybeShowBatteryReminder();
         } else beginSpeechAt(visibleParagraphStart());
     }
 
@@ -437,7 +445,88 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                     != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 50);
         }
-        speechButton.setText("停止");
+        speechButton.setText("暂停");
+        maybeShowBatteryReminder();
+    }
+
+    /** Only the Android-wide optimization allowlist is detectable; OEM switches are not. */
+    private boolean systemBatteryExempt() {
+        if (android.os.Build.VERSION.SDK_INT < 23) return true;
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+    private void maybeShowBatteryReminder() {
+        if (shownBatteryTipThisSession || systemBatteryExempt()) return;
+        android.content.SharedPreferences preferences = getPreferences(MODE_PRIVATE);
+        if (preferences.getBoolean(BATTERY_REMIND_HIDDEN, false)) return;
+        long now = System.currentTimeMillis();
+        long previous = preferences.getLong(BATTERY_REMIND_LAST, 0L);
+        if (previous > 0 && now >= previous
+                && now - previous < BATTERY_REMIND_INTERVAL_MS) return;
+        shownBatteryTipThisSession = true;
+        preferences.edit().putLong(BATTERY_REMIND_LAST, now).apply();
+        showBatteryGuide(false);
+    }
+
+    private void openAppPowerSettings() {
+        // This is the portable entry point. Each manufacturer exposes its own battery menu.
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:" + getPackageName()));
+        try {
+            startActivity(intent);
+        } catch (Exception ex) {
+            try {
+                startActivity(new Intent(Settings.ACTION_SETTINGS));
+            } catch (Exception ignored) {
+                message("请手动进入系统设置 → 应用 → TXT 阅读器 → 电池／耗电管理");
+            }
+        }
+    }
+
+    private void openBatteryOptimizationSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+        } catch (Exception ex) {
+            openAppPowerSettings();
+        }
+    }
+
+    private void showBatteryGuide(boolean manual) {
+        String androidState = systemBatteryExempt()
+                ? "Android 标准省电优化：本应用已获豁免。"
+                : "Android 标准省电优化：本应用尚未获豁免。";
+        String information = androidState
+                + "\n\n为保证锁屏、切换应用后持续朗读，请进入手机设置，找到"
+                + "TXT 阅读器的「电池／耗电管理」，选择「允许后台活动」"
+                + "「允许后台高耗电」或「不限制／无限制」（具体名称因手机而异）。"
+                + "\n\n注意：手机厂商的「允许后台活动」可能是单独的开关，"
+                + "Android 没有统一接口检测，因此上面的结果不代表厂商开关状态。"
+                + "\n\n开启可能增加耗电量；不修改设置也可以继续朗读。";
+        AlertDialog.Builder builder = new AlertDialog.Builder(this)
+                .setTitle("允许后台活动，保持连续朗读")
+                .setMessage(information)
+                .setPositiveButton("打开应用设置", (d, w) -> openAppPowerSettings())
+                .setNegativeButton("暂不设置", null);
+        if (manual) {
+            builder.setNeutralButton("系统省电优化列表",
+                    (d, w) -> openBatteryOptimizationSettings());
+        } else {
+            CheckBox neverAgain = new CheckBox(this);
+            neverAgain.setText("我已设置允许后台活动，不再提醒");
+            neverAgain.setTextSize(13);
+            neverAgain.setPadding(dp(16), 0, dp(12), dp(4));
+            builder.setView(neverAgain);
+            AlertDialog dialog = builder.create();
+            dialog.setOnDismissListener(d -> {
+                if (neverAgain.isChecked())
+                    getPreferences(MODE_PRIVATE).edit()
+                            .putBoolean(BATTERY_REMIND_HIDDEN, true).apply();
+            });
+            dialog.show();
+            return;
+        }
+        builder.show();
     }
 
     private void stopSpeech() {
@@ -535,7 +624,7 @@ public class MainActivity extends Activity implements SpeechService.Listener {
 
     private void showDataMenu() {
         new AlertDialog.Builder(this).setTitle("本地书架与进度")
-                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复"},
+                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复", "后台朗读设置"},
                     (dialog, choice) -> {
                         if (choice == 0) {
                             Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -543,11 +632,13 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                             i.setType("application/zip");
                             i.putExtra(Intent.EXTRA_TITLE, "txt-reader-backup.zip");
                             startActivityForResult(i, BACKUP_EXPORT);
-                        } else {
+                        } else if (choice == 1) {
                             Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                             i.addCategory(Intent.CATEGORY_OPENABLE);
                             i.setType("*/*");
                             startActivityForResult(i, BACKUP_IMPORT);
+                        } else {
+                            showBatteryGuide(true);
                         }
                     }).setNegativeButton("取消", null).show();
     }

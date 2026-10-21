@@ -4,6 +4,11 @@ Lightweight native Android TXT novel reader with offline system TTS. No third-pa
 
 ## Features
 
+- **v0.1.5 battery guidance:** Before continuous speech, check the Android standard battery optimization exemption with `PowerManager.isIgnoringBatteryOptimizations()`; if not exempt, offer a non-blocking reminder with a shortcut to per-app Android settings. Some OEM-specific "allow background activity" switches cannot be inspected via public Android APIs. A manual guide is always accessible via 数据 → 后台朗读设置; reminders can be suppressed.
+- **GPL-3.0-only:** see [LICENSE](LICENSE) for the complete GNU General Public License v3.
+- **Release integrity:** every signed release APK is published with `SHA256SUMS.txt`; download both from the official GitHub Release and run `sha256sum -c SHA256SUMS.txt` (on Windows, use `Get-FileHash .\\txt-reader-v0.1.5.apk -Algorithm SHA256` and compare). Checksums detect changes against a trusted manifest but cannot authenticate a manifest that an attacker also replaced; APK certificate fingerprint is verified in GitHub Actions.
+
+
 - **v0.1.4 TTS reliability:** rolling 3-sentence Android TTS queue (one QUEUE_FLUSH to begin, QUEUE_ADD for all subsequent sentences), which keeps speaking across paragraph and chapter boundaries without relying on a new single utterance submission per callback. Stale utterance IDs are ignored; queue recovery replays the first unfinished sentence. Android logcat tag: `TXTReaderTTS`.
 
 - Imports local TXT files (UTF-8/UTF-16/GB18030), automatically detects Chinese chapters and restores scroll positions.
