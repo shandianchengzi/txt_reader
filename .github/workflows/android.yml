@@ -36,6 +36,8 @@ jobs:
           gradle-version: '8.9'
       - name: Compile APK (no private signing key required)
         run: gradle --no-daemon :app:assembleDebug
+      - name: Test speech timer transitions
+        run: bash tools/test_sleep_timer.sh
       - name: Signing key required for Release
         if: env.ANDROID_KEYSTORE_BASE64 == '' || env.ANDROID_SIGNING_PASSWORD == ''
         run: echo "::warning::Set ANDROID_KEYSTORE_BASE64 and ANDROID_SIGNING_PASSWORD in Actions secrets and re-run. No temporary-key Release will be published."
@@ -72,23 +74,23 @@ jobs:
       - name: Prepare APK
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         run: |
-          cp app/build/outputs/apk/release/app-release.apk txt-reader-v0.1.6.apk
-          sha256sum txt-reader-v0.1.6.apk > SHA256SUMS.txt
+          cp app/build/outputs/apk/release/app-release.apk txt-reader-v0.1.7.apk
+          sha256sum txt-reader-v0.1.7.apk > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
       - uses: actions/upload-artifact@v4
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != ''
         with:
-          name: txt-reader-v0.1.6-release
+          name: txt-reader-v0.1.7-release
           path: |
-            txt-reader-v0.1.6.apk
+            txt-reader-v0.1.7.apk
             SHA256SUMS.txt
       - name: Publish permanent-key Release
         if: env.ANDROID_KEYSTORE_BASE64 != '' && env.ANDROID_SIGNING_PASSWORD != '' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view v0.1.6 >/dev/null 2>&1; then
-            gh release upload v0.1.6 txt-reader-v0.1.6.apk SHA256SUMS.txt --clobber
+          if gh release view v0.1.7 >/dev/null 2>&1; then
+            gh release upload v0.1.7 txt-reader-v0.1.7.apk SHA256SUMS.txt --clobber
           else
-            gh release create v0.1.6 txt-reader-v0.1.6.apk SHA256SUMS.txt --title "TXT Reader v0.1.6" --notes "新增 数据 → 检查更新：通过 GitHub Releases 查询新版本，验证 SHA-256 与固定签名证书后交由 Android 安装。持续提供 GPL-3.0-only LICENSE 和 SHA256SUMS.txt。"
+            gh release create v0.1.7 txt-reader-v0.1.7.apk SHA256SUMS.txt --title "TXT Reader v0.1.7" --notes "新增 数据 → 朗读定时：15/30/45/120 分钟或不限时；计时结束自动停止，暂停时冻结计时，支持运行中更改并保存到备份。保留签名 APK 和 SHA256SUMS.txt。"
           fi

@@ -23,6 +23,7 @@ public final class SpeechService extends Service {
     static final String STOP = "txtreader.STOP";
     static final String PAUSE = "txtreader.PAUSE";
     static final String RESUME = "txtreader.RESUME";
+    static final String TIMER_CHANGED = "txtreader.TIMER_CHANGED";
     private static final int NOTIFICATION_ID = 7;
     private static final String CHANNEL = "txtreader-reading";
     private static final int MAX_BYTES = 32 * 1024 * 1024;
@@ -34,6 +35,10 @@ public final class SpeechService extends Service {
     }
     private static volatile SpeechService active;
     private static Listener listener;
+    static boolean isActive() {
+        SpeechService s = active;
+        return s != null && s.started;
+    }
     static boolean isPlaying(String uri) {
         SpeechService s = active;
         return s != null && s.playing && uri.equals(s.uri);
@@ -49,6 +54,32 @@ public final class SpeechService extends Service {
             callback.onSpeech(s.uri, s.chapter, s.lastStart, s.lastEnd, s.playing);
     }
     private final Handler main = new Handler(Looper.getMainLooper());
+    private final ReadingSleepTimer sleepTimer = new ReadingSleepTimer();
+    private final Runnable sleepTimerExpired = () -> {
+        if (!started || !playing) return;
+        long now = SystemClock.elapsedRealtime();
+        if (sleepTimer.expired(now)) {
+            android.util.Log.i("TXTReaderTTS", "Reading timer elapsed; stopping playback");
+            finish();
+        } else armSleepTimer();
+    };
+
+    private int preferredTimerMinutes() {
+        return ReadingSleepTimer.normalized(
+                getSharedPreferences("MainActivity", MODE_PRIVATE)
+                        .getInt(ReadingSleepTimer.PREF_KEY, 0));
+    }
+    private void armSleepTimer() {
+        main.removeCallbacks(sleepTimerExpired);
+        if (!started || !playing) return;
+        long now = SystemClock.elapsedRealtime();
+        if (sleepTimer.expired(now)) {
+            main.post(sleepTimerExpired);
+        } else {
+            long remaining = sleepTimer.remaining(now);
+            if (remaining > 0) main.postDelayed(sleepTimerExpired, remaining);
+        }
+    }
     private final ArrayList<Integer> starts = new ArrayList<>();
     private TextToSpeech engine;
     private PowerManager.WakeLock wake;
@@ -213,6 +244,13 @@ public final class SpeechService extends Service {
         if (STOP.equals(action)) { finish(); return START_NOT_STICKY; }
         if (PAUSE.equals(action)) { pausePlayback(true); return START_NOT_STICKY; }
         if (RESUME.equals(action)) { resumePlayback(); return START_NOT_STICKY; }
+        if (TIMER_CHANGED.equals(action)) {
+            if (started) {
+                sleepTimer.reset(preferredTimerMinutes(), SystemClock.elapsedRealtime(), playing);
+                armSleepTimer();
+            }
+            return START_NOT_STICKY;
+        }
         if (!PLAY.equals(action)) return START_NOT_STICKY;
         String requestedUri = intent.getStringExtra("uri");
         if (requestedUri == null) { finish(); return START_NOT_STICKY; }
@@ -221,6 +259,8 @@ public final class SpeechService extends Service {
         int currentLoad = loadSerial;
         playing = true;
         started = true;
+        sleepTimer.reset(preferredTimerMinutes(), SystemClock.elapsedRealtime(), true);
+        armSleepTimer();
         resumeOnGain = false;
         engineReady = false;
         uri = requestedUri;
@@ -355,6 +395,8 @@ public final class SpeechService extends Service {
         resumeOnGain = false;
         playing = true;
         if (wake != null && !wake.isHeld()) wake.acquire();
+        sleepTimer.resume(SystemClock.elapsedRealtime());
+        armSleepTimer();
         updateNotification();
         recoveryAttempts = 0;
         if (engineReady) {
@@ -367,6 +409,8 @@ public final class SpeechService extends Service {
     private void pausePlayback(boolean manual) {
         if (!started) return;
         if (manual) resumeOnGain = false;
+        sleepTimer.pause(SystemClock.elapsedRealtime());
+        main.removeCallbacks(sleepTimerExpired);
         Segment first = pending.peekFirst();
         if (first != null) {
             chapter = first.chapter;
@@ -534,6 +578,7 @@ public final class SpeechService extends Service {
         playing = false;
         started = false;
         resumeOnGain = false;
+        main.removeCallbacks(sleepTimerExpired);
         ++queueEpoch;
         pending.clear();
         main.removeCallbacks(watchdog);
@@ -550,6 +595,7 @@ public final class SpeechService extends Service {
         loadSerial++;
         playing = false;
         started = false;
+        main.removeCallbacks(sleepTimerExpired);
         ++queueEpoch;
         pending.clear();
         main.removeCallbacks(watchdog);

@@ -38,6 +38,8 @@ final class BackupStore {
                 manifest.put("books", records);
                 manifest.put("font", metadata.optInt("font", 19));
                 manifest.put("speed", metadata.optDouble("speed", 1.0));
+                manifest.put(ReadingSleepTimer.PREF_KEY, ReadingSleepTimer.normalized(
+                        metadata.optInt(ReadingSleepTimer.PREF_KEY, 0)));
                 byte[] json = manifest.toString().getBytes(StandardCharsets.UTF_8);
                 if (json.length > MAX_MANIFEST) throw new IOException("书架索引过大");
                 zip.putNextEntry(new ZipEntry("manifest.json"));
