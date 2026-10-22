@@ -624,9 +624,37 @@ public class MainActivity extends Activity implements SpeechService.Listener {
         });
     }
 
+    private void showSpeechTimerSettings() {
+        final String[] labels = {"15 分钟", "30 分钟", "45 分钟", "2 小时", "不限时"};
+        int selectedMinutes = ReadingSleepTimer.normalized(
+                getPreferences(MODE_PRIVATE).getInt(ReadingSleepTimer.PREF_KEY, 0));
+        int selection = 4;
+        for (int i = 0; i < ReadingSleepTimer.OPTIONS.length; i++) {
+            if (ReadingSleepTimer.OPTIONS[i] == selectedMinutes) {
+                selection = i;
+                break;
+            }
+        }
+        new AlertDialog.Builder(this).setTitle("朗读定时")
+                .setSingleChoiceItems(labels, selection, (dialog, which) -> {
+                    int minutes = ReadingSleepTimer.OPTIONS[which];
+                    getPreferences(MODE_PRIVATE).edit()
+                            .putInt(ReadingSleepTimer.PREF_KEY, minutes).apply();
+                    // Applying while reading resets the countdown from this point;
+                    // a paused session gets its full allowance on the next resume.
+                    if (SpeechService.isActive())
+                        startService(new Intent(this, SpeechService.class)
+                                .setAction(SpeechService.TIMER_CHANGED));
+                    message(minutes == 0 ? "已关闭朗读定时" :
+                            "朗读定时已设置为 " + labels[which]);
+                    dialog.dismiss();
+                })
+                .setNegativeButton("取消", null).show();
+    }
+
     private void showDataMenu() {
         new AlertDialog.Builder(this).setTitle("数据与设置")
-                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复", "后台朗读设置", "检查更新"},
+                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复", "后台朗读设置", "检查更新", "朗读定时"},
                     (dialog, choice) -> {
                         if (choice == 0) {
                             Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -641,8 +669,10 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                             startActivityForResult(i, BACKUP_IMPORT);
                         } else if (choice == 2) {
                             showBatteryGuide(true);
-                        } else {
+                        } else if (choice == 3) {
                             updater.checkForUpdates();
+                        } else {
+                            showSpeechTimerSettings();
                         }
                     }).setNegativeButton("取消", null).show();
     }
@@ -663,6 +693,8 @@ public class MainActivity extends Activity implements SpeechService.Listener {
         m.put("books", books);
         m.put("font", fontSize);
         m.put("speed", speed);
+        m.put(ReadingSleepTimer.PREF_KEY,
+                getPreferences(MODE_PRIVATE).getInt(ReadingSleepTimer.PREF_KEY, 0));
         return m;
     }
 
@@ -711,6 +743,9 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                         }
                         fontSize = Math.max(12, Math.min(32, state.optInt("font", 19)));
                         speed = Math.max(0.5f, Math.min(3f, (float) state.optDouble("speed", 1)));
+                        getPreferences(MODE_PRIVATE).edit()
+                                .putInt(ReadingSleepTimer.PREF_KEY, ReadingSleepTimer.normalized(
+                                        state.optInt(ReadingSleepTimer.PREF_KEY, 0))).apply();
                         page.setTextSize(fontSize);
                         save();
                         String keep = "";
