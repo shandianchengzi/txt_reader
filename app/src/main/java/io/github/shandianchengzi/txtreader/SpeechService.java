@@ -55,14 +55,16 @@ public final class SpeechService extends Service {
     }
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ReadingSleepTimer sleepTimer = new ReadingSleepTimer();
-    private final Runnable sleepTimerExpired = () -> {
+    private final Runnable sleepTimerExpired = this::handleSleepTimerExpired;
+
+    private void handleSleepTimerExpired() {
         if (!started || !playing) return;
         long now = SystemClock.elapsedRealtime();
         if (sleepTimer.expired(now)) {
             android.util.Log.i("TXTReaderTTS", "Reading timer elapsed; stopping playback");
             finish();
         } else armSleepTimer();
-    };
+    }
 
     private int preferredTimerMinutes() {
         return ReadingSleepTimer.normalized(
