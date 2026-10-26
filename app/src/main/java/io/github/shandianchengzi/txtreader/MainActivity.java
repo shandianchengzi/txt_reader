@@ -652,9 +652,17 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                 .setNegativeButton("取消", null).show();
     }
 
+    private void showAbout() {
+        new AlertDialog.Builder(this)
+                .setTitle("关于 TXT 阅读器")
+                .setMessage("想换音色？请前往手机设置中的「文本转语音」进行更改。")
+                .setPositiveButton("确定", null)
+                .show();
+    }
+
     private void showDataMenu() {
         new AlertDialog.Builder(this).setTitle("数据与设置")
-                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复", "后台朗读设置", "检查更新", "朗读定时"},
+                .setItems(new String[]{"导出完整备份（含小说）", "从 ZIP 备份恢复", "后台朗读设置", "检查更新", "朗读定时", "关于"},
                     (dialog, choice) -> {
                         if (choice == 0) {
                             Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
@@ -671,8 +679,10 @@ public class MainActivity extends Activity implements SpeechService.Listener {
                             showBatteryGuide(true);
                         } else if (choice == 3) {
                             updater.checkForUpdates();
-                        } else {
+                        } else if (choice == 4) {
                             showSpeechTimerSettings();
+                        } else {
+                            showAbout();
                         }
                     }).setNegativeButton("取消", null).show();
     }
